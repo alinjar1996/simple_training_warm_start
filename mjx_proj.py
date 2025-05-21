@@ -63,22 +63,33 @@ class TrajectoryProjector:
         # self.t = self.t + 0.001  # Add a small value to avoid division by zero
         
         # First-order finite difference for acceleration (from velocity)
-        D1 = np.zeros((n-1, n))
-        for i in range(n-1):
+        D1 = np.zeros((n, n))
+        for i in range(n):
             D1[i, i] = -1
-            D1[i, i+1] = 1
+            if i < n-1:
+                D1[i, i+1] = 1
+   
+
         D1 = D1 / (self.t)
         
         # Second-order finite difference for jerk (from velocity)
-        D2 = np.zeros((n-2, n))
-        for i in range(n-2):
-            D2[i, i] = 1
-            D2[i, i+1] = -2
-            D2[i, i+2] = 1
+        D2 = np.zeros((n, n))
+        for i in range(n):
+            #D2[i, i] = 1
+            if i < n-2:
+                D2[i, i] = 1
+                
+                D2[i, i+1] = -2
+                D2[i, i+2] = 1
+
+
         D2 = D2 / (self.t**2)
         
         self.D1 = jnp.array(D1)  # Acceleration operator
         self.D2 = jnp.array(D2)  # Jerk operator
+
+        # print("self.D1", self.D1.shape)
+        # print("self.D2", self.D2.shape)
     
     def setup_optimization_matrices(self):
         """Setup matrices needed for the quadratic programming problem"""
@@ -102,46 +113,50 @@ class TrajectoryProjector:
         self.A_v_ineq = np.kron(np.identity(self.num_dof), self.A_v )
 
 
-        self.A_a = np.vstack((np.identity(self.num_steps), -np.identity(self.num_steps)))
+        self.A_a = np.vstack((self.D1, -self.D1))
 
         self.A_a_ineq = np.kron(np.identity(self.num_dof), self.A_a )
 
 
-        self.A_j = np.vstack((np.identity(self.num_steps), -np.identity(self.num_steps)))
+        self.A_j = np.vstack((self.D2, -self.D2))
 
         self.A_j_ineq = np.kron(np.identity(self.num_dof), self.A_j )
 
-        print(self.A_v_ineq.shape)
-
-        #self.A_v_ineq = jnp.eye(self.nvar)
-        
-        # Acceleration constraints
-        # For each DOF, we need a matrix to compute accelerations
-        A_a_list = []
-        for i in range(d):
-            # Create acceleration constraint matrix for this DOF
-            A_dof = jnp.zeros((n-1, n*d))
-            # Fill in the finite difference coefficients
-            A_dof = A_dof.at[:, i*n:(i+1)*n].set(self.D1)
-            A_a_list.append(A_dof)
-        
-        # Combine all DOF constraints
-        self.A_a_ineq = jnp.vstack(A_a_list)
+        # print("self.A_v_ineq", self.A_v_ineq.shape)
+        # print("self.A_a_ineq", self.A_a_ineq.shape)
+        # print("self.A_j_ineq", self.A_j_ineq.shape)
 
         
+
+        # #self.A_v_ineq = jnp.eye(self.nvar)
         
-        # Jerk constraints
-        # For each DOF, we need a matrix to compute jerks
-        A_j_list = []
-        for i in range(d):
-            # Create jerk constraint matrix for this DOF
-            A_dof = jnp.zeros((n-2, n*d))
-            # Fill in the finite difference coefficients
-            A_dof = A_dof.at[:, i*n:(i+1)*n].set(self.D2)
-            A_j_list.append(A_dof)
+        # # Acceleration constraints
+        # # For each DOF, we need a matrix to compute accelerations
+        # A_a_list = []
+        # for i in range(d):
+        #     # Create acceleration constraint matrix for this DOF
+        #     A_dof = jnp.zeros((n, n*d))
+        #     # Fill in the finite difference coefficients
+        #     A_dof = A_dof.at[:, i*n:(i+1)*n].set(self.D1)
+        #     A_a_list.append(A_dof)
         
-        # Combine all DOF constraints
-        self.A_j_ineq = jnp.vstack(A_j_list)
+        # # Combine all DOF constraints
+        # self.A_a_ineq = jnp.vstack(A_a_list, -A_a_list)
+
+        
+        
+        # # Jerk constraints
+        # # For each DOF, we need a matrix to compute jerks
+        # A_j_list = []
+        # for i in range(d):
+        #     # Create jerk constraint matrix for this DOF
+        #     A_dof = jnp.zeros((n, n*d))
+        #     # Fill in the finite difference coefficients
+        #     A_dof = A_dof.at[:, i*n:(i+1)*n].set(self.D2)
+        #     A_j_list.append(A_dof)
+        
+        # # Combine all DOF constraints
+        # self.A_j_ineq = jnp.vstack(A_j_list, -A_j_list)
 
         self.A_eq = jnp.kron(
                     jnp.eye(self.num_dof),                    # shape: (d, d)
@@ -178,6 +193,8 @@ class TrajectoryProjector:
         )
 
         
+
+        
     
     @partial(jax.jit, static_argnums=(0,))
     def compute_projection(self, lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples):
@@ -194,21 +211,33 @@ class TrajectoryProjector:
         """
         # Setup constraint bounds
         # Velocity constraints
-        v_max_vec = self.v_max * jnp.ones((self.num_batch, self.nvar))
+        v_max_temp = jnp.hstack(( self.v_max*jnp.ones((self.num_batch, self.num_steps)),  self.v_max*jnp.ones((self.num_batch, self.num_steps)) ))
+		
+        v_max_vec = jnp.tile(v_max_temp, (1, self.num_dof))
+        
         b_v = v_max_vec
         
         # Acceleration constraints
-        a_max_vec = self.a_max * jnp.ones((self.num_batch, (self.num_steps-1)*self.num_dof))
+        a_max_temp = jnp.hstack(( self.a_max*jnp.ones((self.num_batch, self.num_steps)),  self.a_max*jnp.ones((self.num_batch, self.num_steps)) ))
+        
+        a_max_vec = jnp.tile(a_max_temp, (1, self.num_dof))
+
+
         b_a = a_max_vec
         
         # Jerk constraints
-        j_max_vec = self.j_max * jnp.ones((self.num_batch, (self.num_steps-2)*self.num_dof))
+        j_max_temp = jnp.hstack(( self.j_max*jnp.ones((self.num_batch, self.num_steps)),  self.j_max*jnp.ones((self.num_batch, self.num_steps)) ))
+        
+        j_max_vec = jnp.tile(j_max_temp, (1, self.num_dof))
+
         b_j = j_max_vec
         
         # Augmented bounds with slack variables
         b_v_aug = b_v - s_v
         b_a_aug = b_a - s_a
         b_j_aug = b_j - s_j
+
+        # jax.debug.print("shape of b_v_aug: {}", b_v_aug.shape)
         
 
         v_start = jnp.tile(self.v_start, (self.num_batch, 1))
@@ -234,15 +263,15 @@ class TrajectoryProjector:
         # jax.debug.print("shape of primal_sol: {}", primal_sol.shape)
 
         # Update slack variables
-        s_v = jnp.maximum(jnp.zeros((self.num_batch, self.nvar)), 
+        s_v = jnp.maximum(jnp.zeros((self.num_batch, 2*self.nvar)), 
                          -jnp.dot(self.A_v_ineq, primal_sol.T).T + b_v)
         res_v = jnp.dot(self.A_v_ineq, primal_sol.T).T - b_v + s_v
         
-        s_a = jnp.maximum(jnp.zeros((self.num_batch, (self.num_steps-1)*self.num_dof)), 
+        s_a = jnp.maximum(jnp.zeros((self.num_batch, 2*self.nvar)), 
                          -jnp.dot(self.A_a_ineq, primal_sol.T).T + b_a)
         res_a = jnp.dot(self.A_a_ineq, primal_sol.T).T - b_a + s_a
         
-        s_j = jnp.maximum(jnp.zeros((self.num_batch, (self.num_steps-2)*self.num_dof)), 
+        s_j = jnp.maximum(jnp.zeros((self.num_batch, 2*self.nvar)), 
                          -jnp.dot(self.A_j_ineq, primal_sol.T).T + b_j)
         res_j = jnp.dot(self.A_j_ineq, primal_sol.T).T - b_j + s_j
         
@@ -264,9 +293,9 @@ class TrajectoryProjector:
     def project_trajectories(self, xi_samples):
         """Project sampled trajectories to satisfy constraints"""
         # Initialize slack variables and Lagrange multipliers
-        s_v = jnp.zeros((self.num_batch, self.nvar))
-        s_a = jnp.zeros((self.num_batch, (self.num_steps-1)*self.num_dof))
-        s_j = jnp.zeros((self.num_batch, (self.num_steps-2)*self.num_dof))
+        s_v = jnp.zeros((self.num_batch, 2*self.nvar))
+        s_a = jnp.zeros((self.num_batch, 2*self.nvar))
+        s_j = jnp.zeros((self.num_batch, 2*self.nvar))
         
         lamda_v = jnp.zeros((self.num_batch, self.nvar))
         lamda_a = jnp.zeros((self.num_batch, self.nvar))
@@ -390,33 +419,33 @@ def main():
         num_steps=50,
         num_batch=100,
         timestep=0.05,
-        maxiter_projection=50,
+        maxiter_projection=20,
         v_max=2.0,
         a_max=3.0,
         j_max=6.0
     )
     
-    # # Sample a trajectory
-    # key = jax.random.PRNGKey(42)
-    # xi_samples, _ = projector.sample_uniform_trajectories(key)
+    # Sample a trajectory
+    key = jax.random.PRNGKey(42)
+    xi_samples, _ = projector.sample_uniform_trajectories(key)
     
-    # # Project the trajectory
-    # start_time = time.time()
-    # projected = projector.project_trajectories(xi_samples)
-    # print(f"Projection time: {time.time() - start_time:.3f} seconds")
+    # Project the trajectory
+    start_time = time.time()
+    projected = projector.project_trajectories(xi_samples)
+    print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
-    # # Convert to numpy for saving/analysis
-    # xi_np = np.array(xi_samples[0])
-    # projected_np = np.array(projected[0])
+    # Convert to numpy for saving/analysis
+    xi_np = np.array(xi_samples[0])
+    projected_np = np.array(projected[0])
     
-    # # Save results
-    # os.makedirs('results', exist_ok=True)
-    # np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
-    # np.savetxt('results/projected_trajectory.csv', projected_np, delimiter=',')
+    # Save results
+    os.makedirs('results', exist_ok=True)
+    np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
+    np.savetxt('results/projected_trajectory.csv', projected_np, delimiter=',')
     
-    # print("Generated sample trajectories")
-    # print(f"Original shape: {xi_np.shape}")
-    # print(f"Projected shape: {projected_np.shape}")
+    print("Generated sample trajectories")
+    print(f"Original shape: {xi_np.shape}")
+    print(f"Projected shape: {projected_np.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
