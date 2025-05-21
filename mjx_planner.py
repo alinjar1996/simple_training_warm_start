@@ -18,10 +18,12 @@ class TrajectoryProjector:
                  v_max=1.0,            # Maximum joint velocity
                  a_max=2.0,            # Maximum joint acceleration
                  j_max=5.0):           # Maximum joint jerk
+        # Total number of variables (velocities for all DoFs and timesteps)
         
         self.num_dof = num_dof
         self.num_steps = num_steps
         self.num_batch = num_batch
+        self.nvar = num_dof * num_steps
         self.t = timestep
         self.maxiter_projection = maxiter_projection
         self.rho_projection = rho_projection
@@ -32,6 +34,11 @@ class TrajectoryProjector:
         self.a_max = a_max
         self.j_max = j_max
         
+        #Boundaries
+        self.v_start = jnp.zeros(num_dof)
+        self.v_goal = jnp.zeros(num_dof)
+
+        
         # Setup finite difference matrices for velocity, acceleration, and jerk
         self.setup_finite_difference_matrices()
         
@@ -39,7 +46,15 @@ class TrajectoryProjector:
         self.setup_optimization_matrices()
         
         # Setup random key for JAX
-        self.key = jax.random.PRNGKey(int(time.time()))
+        self.key = jax.random.PRNGKey(0)
+
+        self.compute_boundary_vec_batch = (jax.vmap(self.compute_boundary_vec_single, in_axes = (0)  ))
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_boundary_vec_single(self, boundary_state):
+        b_eq_term = boundary_state.reshape(2, self.num_dof).T
+        b_eq_term = b_eq_term.reshape(2 * self.num_dof )
+        return b_eq_term
     
     def setup_finite_difference_matrices(self):
         """Create finite difference matrices for computing acceleration and jerk"""
@@ -70,12 +85,12 @@ class TrajectoryProjector:
         n = self.num_steps
         d = self.num_dof
         
-        # Total number of variables (velocities for all DoFs and timesteps)
-        self.nvar = n * d
+        
         
         # Identity matrix for the objective function
-        self.Q = jnp.eye(self.nvar)
-        self.Q_inv = jnp.linalg.inv(self.Q)
+        #self.Q = jnp.eye(self.nvar)
+        #self.Q_inv = jnp.linalg.inv(self.Q)
+
         
         # Construct constraint matrices
         
@@ -94,6 +109,8 @@ class TrajectoryProjector:
         
         # Combine all DOF constraints
         self.A_a_ineq = jnp.vstack(A_a_list)
+
+        
         
         # Jerk constraints
         # For each DOF, we need a matrix to compute jerks
@@ -107,12 +124,42 @@ class TrajectoryProjector:
         
         # Combine all DOF constraints
         self.A_j_ineq = jnp.vstack(A_j_list)
+
+        self.A_eq = jnp.kron(
+                    jnp.eye(self.num_dof),                    # shape: (d, d)
+                    jnp.array([[1.0] + [0.0] * (self.num_steps - 1),  # shape: (2, T)
+                            [0.0] * (self.num_steps - 1) + [1.0]]) # picks first and last timestep
+                )
+        
+        
+        
         
         # Matrix to go from optimization variables to DOF velocities
         self.A_thetadot = jnp.eye(self.nvar)
         
         # Projection matrices
         self.A_projection = jnp.eye(self.nvar)
+
+        self.Q_ = jnp.dot(self.A_projection.T, self.A_projection) + \
+                  self.rho_ineq * jnp.dot(self.A_v_ineq.T, self.A_v_ineq) + \
+                  self.rho_ineq * jnp.dot(self.A_a_ineq.T, self.A_a_ineq) + \
+                  self.rho_ineq * jnp.dot(self.A_j_ineq.T, self.A_j_ineq)
+        
+        
+        self.Q_inv = jnp.linalg.inv(
+            jnp.vstack((
+                jnp.hstack((
+                    self.Q_,
+                    self.A_eq.T
+                )),
+                jnp.hstack((
+                    self.A_eq,
+                    np.zeros((np.shape(self.A_eq)[0], np.shape(self.A_eq)[0]))
+                ))
+            ))
+        )
+
+        
     
     @partial(jax.jit, static_argnums=(0,))
     def compute_projection(self, lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples):
@@ -145,16 +192,29 @@ class TrajectoryProjector:
         b_a_aug = b_a - s_a
         b_j_aug = b_j - s_j
         
+
+        v_start = jnp.tile(self.v_start, (self.num_batch, 1))
+        v_goal = jnp.tile(self.v_goal, (self.num_batch, 1))
+
+        boundary_state = jnp.hstack([v_start, v_goal])  # shape (2 * num_dof,)
+        boundary_state = jnp.asarray(boundary_state)  
+        
+        b_eq_term = self.compute_boundary_vec_batch(boundary_state)
+
+
         # Linear cost term for the QP
         lincost = -lamda_v - lamda_a - lamda_j - self.rho_projection * jnp.dot(self.A_projection.T, xi_samples.T).T - \
                   self.rho_ineq * jnp.dot(self.A_v_ineq.T, b_v_aug.T).T - \
                   self.rho_ineq * jnp.dot(self.A_a_ineq.T, b_a_aug.T).T - \
                   self.rho_ineq * jnp.dot(self.A_j_ineq.T, b_j_aug.T).T
         
-        # Solve the QP
-        sol = jnp.dot(self.Q_inv, -lincost.T).T
-        primal_sol = sol
         
+        # Solve the QP
+        sol = jnp.dot(self.Q_inv,  jnp.hstack(( -lincost, b_eq_term )).T).T
+        primal_sol = sol[:, 0:self.nvar]
+        
+        # jax.debug.print("shape of primal_sol: {}", primal_sol.shape)
+
         # Update slack variables
         s_v = jnp.maximum(jnp.zeros((self.num_batch, self.nvar)), 
                          -jnp.dot(self.A_v_ineq, primal_sol.T).T + b_v)
@@ -199,6 +259,7 @@ class TrajectoryProjector:
             primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, _ = state
             primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res = self.compute_projection(
                 lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples)
+            #jax.debug.print("Iteration {}: primal_sol = {}", i, primal_sol)
             return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res
         
         # Initialize state
@@ -309,9 +370,9 @@ def main():
     projector = TrajectoryProjector(
         num_dof=1,
         num_steps=50,
-        num_batch=1000,
+        num_batch=100,
         timestep=0.05,
-        maxiter_projection=20,
+        maxiter_projection=50,
         v_max=2.0,
         a_max=3.0,
         j_max=6.0
