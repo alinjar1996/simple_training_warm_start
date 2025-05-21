@@ -255,7 +255,11 @@ class TrajectoryProjector:
                   self.rho_ineq * jnp.dot(self.A_a_ineq.T, b_a_aug.T).T - \
                   self.rho_ineq * jnp.dot(self.A_j_ineq.T, b_j_aug.T).T
         
-        
+        jax.debug.print("lincost max: {}", jnp.max(lincost))
+        jax.debug.print("lincost min: {}", jnp.min(lincost))
+        jax.debug.print("b_eq_term max: {}", jnp.max(b_eq_term))
+        jax.debug.print("b_eq_term min: {}", jnp.min(b_eq_term))
+
         # Solve the QP
         sol = jnp.dot(self.Q_inv,  jnp.hstack(( -lincost, b_eq_term )).T).T
         primal_sol = sol[:, 0:self.nvar]
@@ -280,12 +284,29 @@ class TrajectoryProjector:
         lamda_a = lamda_a - self.rho_ineq * jnp.dot(self.A_a_ineq.T, res_a.T).T
         lamda_j = lamda_j - self.rho_ineq * jnp.dot(self.A_j_ineq.T, res_j.T).T
         
+
+        
+        # jax.debug.print("min self.A_j_ineq: {}", jnp.min(self.A_j_ineq))
+        # jax.debug.print("max self.A_j_ineq: {}", jnp.max(self.A_j_ineq))
+        # jax.debug.print("max lamda_a: {}", jnp.max(lamda_a))
+        
         # Calculate residuals
         res_v_vec = jnp.linalg.norm(res_v, axis=1)
         res_a_vec = jnp.linalg.norm(res_a, axis=1)
         res_j_vec = jnp.linalg.norm(res_j, axis=1)
         
         res_projection = res_v_vec + res_a_vec + res_j_vec
+
+        # jax.debug.print("max res_v_vec: {}", jnp.max(res_v_vec))
+        # jax.debug.print("max res_a_vec: {}", jnp.max(res_a_vec))
+        # jax.debug.print("max res_j_vec: {}", jnp.max(res_j_vec))
+        
+        # jax.debug.print("min res_v_vec: {}", jnp.min(res_v_vec))
+        # jax.debug.print("min res_a_vec: {}", jnp.min(res_a_vec))
+        # jax.debug.print("min res_j_vec: {}", jnp.max(res_j_vec))
+
+        jax.debug.print("max res_projection: {}", jnp.max(res_projection))
+        jax.debug.print("min res_projection: {}", jnp.min(res_projection))
         
         return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res_projection
     
@@ -319,6 +340,33 @@ class TrajectoryProjector:
         
         primal_sol, _, _, _, _, _, _, _ = state
         return primal_sol
+    # @partial(jax.jit, static_argnums=(0,))
+    # def compute_xi_samples(self, key, xi_mean, xi_cov):
+    #     key, subkey = jax.random.split(key)
+    #     xi_samples = jax.random.multivariate_normal(
+    #         subkey, xi_mean, xi_cov + 0.003 * jnp.identity(self.nvar), (self.num_batch,)
+    #     )
+    #     return xi_samples, key
+    
+
+    # @partial(jax.jit, static_argnums=(0,))
+    # def compute_mean_cov(self, cost_ellite, mean_control_prev, cov_control_prev, xi_ellite):
+    #     w = cost_ellite
+    #     w_min = jnp.min(cost_ellite)
+    #     w = jnp.exp(-(1 / self.lamda) * (w - w_min))
+    #     sum_w = jnp.sum(w, axis=0)
+
+    #     mean_control = (1 - self.alpha_mean) * mean_control_prev + \
+    #                 self.alpha_mean * (jnp.sum((xi_ellite * w[:, jnp.newaxis]), axis=0) / sum_w)
+
+    #     diffs = xi_ellite - mean_control
+    #     prod_result = self.vec_product(diffs, w)
+
+    #     cov_control = (1 - self.alpha_cov) * cov_control_prev + \
+    #                 self.alpha_cov * (jnp.sum(prod_result, axis=0) / sum_w) + \
+    #                 0.0001 * jnp.identity(self.nvar)
+
+    #     return mean_control, cov_control
     
     @partial(jax.jit, static_argnums=(0,))
     def sample_uniform_trajectories(self, key):
@@ -343,10 +391,13 @@ class TrajectoryProjector:
             print(f"Generating samples {i} to {min(i+self.num_batch, num_samples)}")
             
             # Sample random trajectories
-            xi_samples, self.key = self.sample_uniform_trajectories(self.key)
+            xi_samples, self.key = self.compute_xi_samples(self.key, xi_mean, xi_cov)
             
             # Project to feasible trajectories
             projected_trajectories = self.project_trajectories(xi_samples)
+
+            xi_mean = jnp.mean(projected_trajectories, axis=0)
+            xi_cov = jnp.cov(projected_trajectories, rowvar=False)
             
             # Compute accelerations and jerks from projected velocities
             accelerations = []
@@ -416,36 +467,43 @@ def main():
     # Initialize the projector
     projector = TrajectoryProjector(
         num_dof=1,
-        num_steps=50,
-        num_batch=100,
+        num_steps=4,
+        num_batch=2,
         timestep=0.05,
-        maxiter_projection=20,
-        v_max=2.0,
-        a_max=3.0,
-        j_max=6.0
+        maxiter_projection=300,
+        v_max=0.1,
+        a_max=0.1,
+        j_max=0.1,
+        rho_ineq= 1.0,
+        rho_projection=1.0,
     )
     
     # Sample a trajectory
     key = jax.random.PRNGKey(42)
     xi_samples, _ = projector.sample_uniform_trajectories(key)
+
+    print(f"Sampled trajectory shape: {xi_samples.shape}")
     
     # Project the trajectory
     start_time = time.time()
-    projected = projector.project_trajectories(xi_samples)
+    xi_filtered = projector.project_trajectories(xi_samples)
+
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
     # Convert to numpy for saving/analysis
-    xi_np = np.array(xi_samples[0])
-    projected_np = np.array(projected[0])
+    xi_np = np.mean(xi_samples, axis=0) 
+    #xi_np = np.array(xi_samples[1])
+    #xi_filtered_np = np.array(xi_filtered[1])
+    xi_filtered_np = np.mean(xi_filtered, axis=0)
     
     # Save results
     os.makedirs('results', exist_ok=True)
     np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
-    np.savetxt('results/projected_trajectory.csv', projected_np, delimiter=',')
+    np.savetxt('results/projected_trajectory.csv', xi_filtered_np, delimiter=',')
     
     print("Generated sample trajectories")
     print(f"Original shape: {xi_np.shape}")
-    print(f"Projected shape: {projected_np.shape}")
+    print(f"xi_filtered shape: {xi_filtered_np.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
