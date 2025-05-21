@@ -60,7 +60,7 @@ class TrajectoryProjector:
         """Create finite difference matrices for computing acceleration and jerk"""
         n = self.num_steps
 
-        self.t = self.t + 0.001  # Add a small value to avoid division by zero
+        # self.t = self.t + 0.001  # Add a small value to avoid division by zero
         
         # First-order finite difference for acceleration (from velocity)
         D1 = np.zeros((n-1, n))
@@ -95,7 +95,25 @@ class TrajectoryProjector:
         # Construct constraint matrices
         
         # Velocity constraints (box constraints)
-        self.A_v_ineq = jnp.eye(self.nvar)
+
+        
+        self.A_v = np.vstack((np.identity(self.num_steps), -np.identity(self.num_steps)))
+
+        self.A_v_ineq = np.kron(np.identity(self.num_dof), self.A_v )
+
+
+        self.A_a = np.vstack((np.identity(self.num_steps), -np.identity(self.num_steps)))
+
+        self.A_a_ineq = np.kron(np.identity(self.num_dof), self.A_a )
+
+
+        self.A_j = np.vstack((np.identity(self.num_steps), -np.identity(self.num_steps)))
+
+        self.A_j_ineq = np.kron(np.identity(self.num_dof), self.A_j )
+
+        print(self.A_v_ineq.shape)
+
+        #self.A_v_ineq = jnp.eye(self.nvar)
         
         # Acceleration constraints
         # For each DOF, we need a matrix to compute accelerations
@@ -378,27 +396,27 @@ def main():
         j_max=6.0
     )
     
-    # Sample a trajectory
-    key = jax.random.PRNGKey(42)
-    xi_samples, _ = projector.sample_uniform_trajectories(key)
+    # # Sample a trajectory
+    # key = jax.random.PRNGKey(42)
+    # xi_samples, _ = projector.sample_uniform_trajectories(key)
     
-    # Project the trajectory
-    start_time = time.time()
-    projected = projector.project_trajectories(xi_samples)
-    print(f"Projection time: {time.time() - start_time:.3f} seconds")
+    # # Project the trajectory
+    # start_time = time.time()
+    # projected = projector.project_trajectories(xi_samples)
+    # print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
-    # Convert to numpy for saving/analysis
-    xi_np = np.array(xi_samples[0])
-    projected_np = np.array(projected[0])
+    # # Convert to numpy for saving/analysis
+    # xi_np = np.array(xi_samples[0])
+    # projected_np = np.array(projected[0])
     
-    # Save results
-    os.makedirs('results', exist_ok=True)
-    np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
-    np.savetxt('results/projected_trajectory.csv', projected_np, delimiter=',')
+    # # Save results
+    # os.makedirs('results', exist_ok=True)
+    # np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
+    # np.savetxt('results/projected_trajectory.csv', projected_np, delimiter=',')
     
-    print("Generated sample trajectories")
-    print(f"Original shape: {xi_np.shape}")
-    print(f"Projected shape: {projected_np.shape}")
+    # print("Generated sample trajectories")
+    # print(f"Original shape: {xi_np.shape}")
+    # print(f"Projected shape: {projected_np.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
