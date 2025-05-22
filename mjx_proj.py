@@ -200,7 +200,7 @@ class TrajectoryProjector:
         
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_projection(self, lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples):
+    def compute_feasible_control(self, lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples):
         """
         Project the sampled velocities onto the feasible set defined by constraints
         
@@ -300,8 +300,8 @@ class TrajectoryProjector:
         return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res_projection
     
     @partial(jax.jit, static_argnums=(0,))
-    def project_trajectories(self, xi_samples):
-        """Project sampled trajectories to satisfy constraints"""
+    def compute_projections(self, xi_samples):
+        """Project sampled trajectories to satisfy constraints using jax.lax.scan"""
         # Initialize slack variables and Lagrange multipliers
         s_v = jnp.zeros((self.num_batch, 2*self.nvar))
         s_a = jnp.zeros((self.num_batch, 2*self.nvar))
@@ -311,24 +311,42 @@ class TrajectoryProjector:
         lamda_a = jnp.zeros((self.num_batch, self.nvar))
         lamda_j = jnp.zeros((self.num_batch, self.nvar))
         
-        # Run ADMM iterations
-        def proj_iter(i, state):
-            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, _ = state
-            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res = self.compute_projection(
+        # Define the scan function for ADMM iterations
+        def proj_scan_fn(carry, x):
+            # carry contains the state variables
+            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j = carry
+            
+            # Perform one projection iteration
+            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res = self.compute_feasible_control(
                 lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples)
-            #jax.debug.print("Iteration {}: primal_sol = {}", i, primal_sol)
-            return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res
+            
+            # Update carry state
+            new_carry = (primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j)
+            
+            # Return residuals as outputs to be accumulated
+            return new_carry, res
         
-        # Initialize state
-        state = (jnp.zeros((self.num_batch, self.nvar)), s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, 
-                 jnp.zeros(self.num_batch))
+        # Initialize carry state
+        initial_carry = (
+            jnp.zeros((self.num_batch, self.nvar)),  # primal_sol
+            s_v, s_a, s_j,                          # slack variables
+            lamda_v, lamda_a, lamda_j                # Lagrange multipliers
+        )
         
-        # Run iterations
-        for i in range(self.maxiter_projection):
-            state = proj_iter(i, state)
+        # Run scan over iterations
+        # x input is just iteration indices, not used in computation
+        xs = jnp.arange(self.maxiter_projection)
         
-        primal_sol, _, _, _, _, _, _, res = state
-        return primal_sol, res
+        final_carry, all_residuals = jax.lax.scan(
+            proj_scan_fn, 
+            initial_carry, 
+            xs
+        )
+        
+        # Extract final primal solution
+        final_primal_sol = final_carry[0]
+        
+        return final_primal_sol, all_residuals
     
     @partial(jax.jit, static_argnums=(0,))
     def sample_uniform_trajectories(self, key):
@@ -348,16 +366,21 @@ class TrajectoryProjector:
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
+        # Initialize mean and covariance for sampling
+        xi_mean = jnp.zeros(self.nvar)
+        xi_cov = jnp.eye(self.nvar)
+        
         # Generate samples in batches
         for i in range(0, num_samples, self.num_batch):
             print(f"Generating samples {i} to {min(i+self.num_batch, num_samples)}")
             
             # Sample random trajectories
-            xi_samples, self.key = self.compute_xi_samples(self.key, xi_mean, xi_cov)
+            xi_samples, self.key = self.sample_uniform_trajectories(self.key)
             
             # Project to feasible trajectories
-            projected_trajectories, residuals = self.project_trajectories(xi_samples)
+            projected_trajectories, all_residuals = self.compute_projections(xi_samples)
 
+            # Update mean and covariance based on projected trajectories
             xi_mean = jnp.mean(projected_trajectories, axis=0)
             xi_cov = jnp.cov(projected_trajectories, rowvar=False)
             
@@ -382,6 +405,7 @@ class TrajectoryProjector:
             proj_np = np.array(projected_trajectories)
             acc_np = np.array(jnp.concatenate(accelerations, axis=1))
             jerk_np = np.array(jnp.concatenate(jerks, axis=1))
+            residuals_np = np.array(all_residuals)  # Shape: (maxiter_projection, num_batch)
             
             # Save batch
             batch_filename = f"batch_{i//self.num_batch}"
@@ -390,7 +414,8 @@ class TrajectoryProjector:
                 original=xi_np,
                 projected=proj_np,
                 accelerations=acc_np,
-                jerks=jerk_np
+                jerks=jerk_np,
+                residuals_all_iterations=residuals_np
             )
             
             # If we've generated enough samples, break
@@ -431,6 +456,27 @@ def visualize_trajectory(original, projected, dof_idx=0, dof=1, dt=0.05):
         plt.savefig(f"trajectory_dof{dof_idx}.png")
         print(f"Plot saved as trajectory_dof{dof_idx}.png")
 
+def visualize_residuals(all_residuals, batch_idx=0):
+    """Visualize residuals across iterations for a specific batch sample"""
+    
+    # all_residuals shape: (maxiter_projection, num_batch)
+    # Extract residuals for specific batch sample
+    residuals_sample = all_residuals[:, batch_idx]
+    
+    iterations = np.arange(len(residuals_sample))
+    
+    plt.figure(figsize=(10, 6))
+    plt.semilogy(iterations, residuals_sample, 'b-', marker='o')
+    plt.xlabel('Iteration')
+    plt.ylabel('Residual (log scale)')
+    plt.title(f'ADMM Residuals Convergence (Batch Sample {batch_idx})')
+    plt.grid(True)
+    
+    try:
+        plt.show()
+    except:
+        plt.savefig(f"residuals_batch{batch_idx}.png")
+        print(f"Residuals plot saved as residuals_batch{batch_idx}.png")
 
 def main():
     # Initialize the projector
@@ -439,7 +485,7 @@ def main():
         num_steps=10,
         num_batch=100,
         timestep=0.05,
-        maxiter_projection=100,
+        maxiter_projection=20,  # Increased to see convergence better
         v_max=1.0,
         a_max=2.0,
         j_max=3.0,
@@ -455,34 +501,37 @@ def main():
     
     # Project the trajectory
     start_time = time.time()
-    xi_filtered, residuals = projector.project_trajectories(xi_samples)
+    xi_filtered, all_residuals = projector.compute_projections(xi_samples)
 
-    print(f"Residuals shape: {residuals.shape}")
+    print(f"All residuals shape: {all_residuals.shape}")  # Should be (maxiter_projection, num_batch)
 
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
     # Convert to numpy for saving/analysis
     xi_np = np.mean(xi_samples, axis=0) 
-    #xi_np = np.array(xi_samples[1])
-    #xi_filtered_np = np.array(xi_filtered[1])
     xi_filtered_np = np.mean(xi_filtered, axis=0)
+    all_residuals_np = np.array(all_residuals)
     
     # Save results
     os.makedirs('results', exist_ok=True)
     np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
     np.savetxt('results/projected_trajectory.csv', xi_filtered_np, delimiter=',')
-    np.savetxt('results/residuals.csv', residuals, delimiter=',')
+    np.savetxt('results/all_residuals.csv', all_residuals_np, delimiter=',')
     
     print("Generated sample trajectories")
     print(f"Original shape: {xi_np.shape}")
     print(f"xi_filtered shape: {xi_filtered_np.shape}")
-    print(f"Residuals shape: {residuals.shape}")
+    print(f"All residuals shape: {all_residuals_np.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
     # projector.generate_dataset(num_samples=5000, output_dir="trajectory_dataset")
 
-    visualize_trajectory(xi_np, xi_filtered_np, dof_idx=0, dof=1, dt=0.05)
+    # # Visualize trajectory
+    # visualize_trajectory(xi_np, xi_filtered_np, dof_idx=0, dof=1, dt=0.05)
+    
+    # # Visualize residuals convergence
+    # visualize_residuals(all_residuals_np, batch_idx=0)
 
 if __name__ == "__main__":
     main()
