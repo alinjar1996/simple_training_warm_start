@@ -39,7 +39,7 @@ class TrajectoryProjector:
         
         #Boundaries
         self.v_start = jnp.zeros(num_dof)
-        self.v_goal = jnp.zeros(num_dof)
+        self.v_goal = 0.1*jnp.ones(num_dof)
 
         
         # Setup finite difference matrices for velocity, acceleration, and jerk
@@ -283,9 +283,6 @@ class TrajectoryProjector:
         lamda_a = lamda_a - self.rho_ineq * jnp.dot(self.A_a_ineq.T, res_a.T).T
         lamda_j = lamda_j - self.rho_ineq * jnp.dot(self.A_j_ineq.T, res_j.T).T
         
-
-        
-
         
         # Calculate residuals
         res_v_vec = jnp.linalg.norm(res_v, axis=1)
@@ -300,7 +297,7 @@ class TrajectoryProjector:
         return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res_projection
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_projections(self, xi_samples):
+    def compute_projection(self, xi_samples, xi_filtered):
         """Project sampled trajectories to satisfy constraints using jax.lax.scan"""
         # Initialize slack variables and Lagrange multipliers
         s_v = jnp.zeros((self.num_batch, 2*self.nvar))
@@ -310,43 +307,55 @@ class TrajectoryProjector:
         lamda_v = jnp.zeros((self.num_batch, self.nvar))
         lamda_a = jnp.zeros((self.num_batch, self.nvar))
         lamda_j = jnp.zeros((self.num_batch, self.nvar))
+
+        xi_filtered_init = xi_filtered
         
         # Define the scan function for ADMM iterations
-        def proj_scan_fn(carry, x):
+        def lax_custom_projection(carry, x):
             # carry contains the state variables
-            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j = carry
+            xi_filtered, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j = carry
+            xi_filtered_prev =  xi_filtered
+            lamda_v_prev = lamda_v
+            lamda_a_prev = lamda_a
+            lamda_j_prev = lamda_j
             
             # Perform one projection iteration
-            primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res = self.compute_feasible_control(
+            xi_filtered, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, primal_residual = self.compute_feasible_control(
                 lamda_v, lamda_a, lamda_j, s_v, s_a, s_j, xi_samples)
             
             # Update carry state
-            new_carry = (primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j)
+            new_carry = (xi_filtered, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j)
+			
+            fixed_point_residual = jnp.linalg.norm(xi_filtered_prev-xi_filtered, axis = 1)+jnp.linalg.norm(lamda_v_prev-lamda_v, axis = 1)
+            fixed_point_residual += jnp.linalg.norm(lamda_a_prev-lamda_a, axis = 1) + jnp.linalg.norm(lamda_j_prev-lamda_j, axis = 1)
             
             # Return residuals as outputs to be accumulated
-            return new_carry, res
+            #return new_carry, res
+        
+            return (xi_filtered, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j), (primal_residual, fixed_point_residual)
         
         # Initialize carry state
-        initial_carry = (
-            jnp.zeros((self.num_batch, self.nvar)),  # primal_sol
+        carry_init = (
+            xi_filtered_init,  # primal_sol
             s_v, s_a, s_j,                          # slack variables
             lamda_v, lamda_a, lamda_j                # Lagrange multipliers
         )
         
         # Run scan over iterations
         # x input is just iteration indices, not used in computation
-        xs = jnp.arange(self.maxiter_projection)
         
-        final_carry, all_residuals = jax.lax.scan(
-            proj_scan_fn, 
-            initial_carry, 
-            xs
+        carry_final, residual_tot = jax.lax.scan(
+            lax_custom_projection, 
+            carry_init, 
+            jnp.arange(self.maxiter_projection)
         )
         
         # Extract final primal solution
-        final_primal_sol = final_carry[0]
+        final_primal_sol,_,_,_,_,_,_ = carry_final
+
+        prime_residual, fixed_point_residual = residual_tot
         
-        return final_primal_sol, all_residuals
+        return final_primal_sol, prime_residual, fixed_point_residual
     
     @partial(jax.jit, static_argnums=(0,))
     def sample_uniform_trajectories(self, key):
@@ -360,115 +369,68 @@ class TrajectoryProjector:
             maxval=self.v_max
         )
         return xi_samples, key
-    
-    def generate_dataset(self, num_samples, output_dir="trajectory_dataset"):
-        """Generate dataset of trajectories by sampling and projecting"""
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Initialize mean and covariance for sampling
-        xi_mean = jnp.zeros(self.nvar)
-        xi_cov = jnp.eye(self.nvar)
-        
-        # Generate samples in batches
-        for i in range(0, num_samples, self.num_batch):
-            print(f"Generating samples {i} to {min(i+self.num_batch, num_samples)}")
-            
-            # Sample random trajectories
-            xi_samples, self.key = self.sample_uniform_trajectories(self.key)
-            
-            # Project to feasible trajectories
-            projected_trajectories, all_residuals = self.compute_projections(xi_samples)
-
-            # Update mean and covariance based on projected trajectories
-            xi_mean = jnp.mean(projected_trajectories, axis=0)
-            xi_cov = jnp.cov(projected_trajectories, rowvar=False)
-            
-            # Compute accelerations and jerks from projected velocities
-            accelerations = []
-            jerks = []
-            
-            for j in range(self.num_dof):
-                # Extract velocities for this DOF
-                vels = projected_trajectories[:, j*self.num_steps:(j+1)*self.num_steps]
-                
-                # Compute accelerations for this DOF
-                accs = jnp.matmul(vels, self.D1.T)
-                accelerations.append(accs)
-                
-                # Compute jerks for this DOF
-                jrks = jnp.matmul(vels, self.D2.T)
-                jerks.append(jrks)
-            
-            # Convert to numpy for saving
-            xi_np = np.array(xi_samples)
-            proj_np = np.array(projected_trajectories)
-            acc_np = np.array(jnp.concatenate(accelerations, axis=1))
-            jerk_np = np.array(jnp.concatenate(jerks, axis=1))
-            residuals_np = np.array(all_residuals)  # Shape: (maxiter_projection, num_batch)
-            
-            # Save batch
-            batch_filename = f"batch_{i//self.num_batch}"
-            np.savez(
-                os.path.join(output_dir, batch_filename),
-                original=xi_np,
-                projected=proj_np,
-                accelerations=acc_np,
-                jerks=jerk_np,
-                residuals_all_iterations=residuals_np
-            )
-            
-            # If we've generated enough samples, break
-            if i + self.num_batch >= num_samples:
-                break
-        
-        print(f"Dataset generated with {num_samples} samples in {output_dir}")
 
 def visualize_trajectory(original, projected, dof_idx=0, dof=1, dt=0.05):
-    """Visualize original and projected trajectories for a specific DOF"""
+    """Visualize original and residual trajectories separately for a specific DOF"""
     
-    # Determine number of time steps
     num_steps = original.shape[0] // dof
     
-    # Extract the velocities for the specified DOF
+    # Extract velocities for the specified DOF
     orig_vel = original[dof_idx*num_steps : (dof_idx+1)*num_steps]
     proj_vel = projected[dof_idx*num_steps : (dof_idx+1)*num_steps]
     
-    # Create time vector
-    time = np.arange(num_steps) * dt  # default timestep=0.05
+    # Calculate residual velocity (original - projected)
+    residual_vel = orig_vel - proj_vel
     
-    # Plot
-    plt.figure(figsize=(10, 6))
+    # Create time vector
+    time = np.arange(num_steps) * dt
+    
+    # Plot original velocity
+    plt.figure(figsize=(10, 4))
     plt.plot(time, orig_vel, 'b-', label='Original')
-    plt.plot(time, proj_vel, 'r-', label='Projected')
     plt.axhline(y=1.0, color='g', linestyle='--', label='v_max')
     plt.axhline(y=-1.0, color='g', linestyle='--')
     plt.xlabel('Time (s)')
     plt.ylabel(f'Joint {dof_idx} Velocity')
-    plt.title('Original vs Projected Joint Velocity')
+    plt.title(f'Original Joint {dof_idx} Velocity')
     plt.legend()
     plt.grid(True)
-    
-    # Use savefig instead of show if in a headless environment
     try:
         plt.show()
     except:
-        plt.savefig(f"trajectory_dof{dof_idx}.png")
-        print(f"Plot saved as trajectory_dof{dof_idx}.png")
+        plt.savefig(f"original_trajectory_dof{dof_idx}.png")
+        print(f"Original plot saved as original_trajectory_dof{dof_idx}.png")
+    
+    # Plot residual velocity
+    plt.figure(figsize=(10, 4))
+    plt.plot(time, residual_vel, 'm-', label='Residual (Original - Projected)')
+    plt.axhline(y=0.0, color='k', linestyle='--')
+    plt.xlabel('Time (s)')
+    plt.ylabel(f'Joint {dof_idx} Residual Velocity')
+    plt.title(f'Residual Velocity for Joint {dof_idx}')
+    plt.legend()
+    plt.grid(True)
+    try:
+        plt.show()
+    except:
+        plt.savefig(f"residual_trajectory_dof{dof_idx}.png")
+        print(f"Residual plot saved as residual_trajectory_dof{dof_idx}.png")
 
-def visualize_residuals(all_residuals, batch_idx=0):
+
+def visualize_residuals(prime_residuals, num_steps, batch_idx=0, dt=0.05):
     """Visualize residuals across iterations for a specific batch sample"""
     
-    # all_residuals shape: (maxiter_projection, num_batch)
+    # prime_residuals shape: (maxiter_projection, num_batch)
     # Extract residuals for specific batch sample
-    residuals_sample = all_residuals[:, batch_idx]
+    time = np.arange(num_steps) * dt
+    residuals_sample = prime_residuals[:, batch_idx]
     
     iterations = np.arange(len(residuals_sample))
     
     plt.figure(figsize=(10, 6))
-    plt.semilogy(iterations, residuals_sample, 'b-', marker='o')
+    plt.plot(residuals_sample, 'b-', marker='o')
     plt.xlabel('Iteration')
-    plt.ylabel('Residual (log scale)')
+    plt.ylabel('Residual')
     plt.title(f'ADMM Residuals Convergence (Batch Sample {batch_idx})')
     plt.grid(True)
     
@@ -498,30 +460,38 @@ def main():
     xi_samples, _ = projector.sample_uniform_trajectories(key)
 
     print(f"Sampled trajectory shape: {xi_samples.shape}")
+
+    xi_filtered_init = xi_samples
     
     # Project the trajectory
     start_time = time.time()
-    xi_filtered, all_residuals = projector.compute_projections(xi_samples)
+    xi_filtered, prime_residuals, fixed_point_residuals = projector.compute_projection(xi_samples, xi_filtered_init)
 
-    print(f"All residuals shape: {all_residuals.shape}")  # Should be (maxiter_projection, num_batch)
+    print(f"prime residuals shape: {prime_residuals.shape}")  # Should be (maxiter_projection, num_batch)
+    print(f"fixed point residuals shape: {fixed_point_residuals.shape}")  # Should be (num_batch)
 
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
     # Convert to numpy for saving/analysis
-    xi_np = np.mean(xi_samples, axis=0) 
-    xi_filtered_np = np.mean(xi_filtered, axis=0)
-    all_residuals_np = np.array(all_residuals)
+    # xi_np = np.mean(xi_samples, axis=0) 
+    # xi_filtered_np = np.mean(xi_filtered, axis=0)
+    xi_np = np.array(xi_samples)
+    xi_filtered_np = np.array(xi_filtered)
+    prime_residuals_np = np.array(prime_residuals)
+    fixed_residuals_np = np.array(fixed_point_residuals)
     
     # Save results
     os.makedirs('results', exist_ok=True)
     np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
     np.savetxt('results/projected_trajectory.csv', xi_filtered_np, delimiter=',')
-    np.savetxt('results/all_residuals.csv', all_residuals_np, delimiter=',')
+    np.savetxt('results/prime_residuals.csv', prime_residuals_np, delimiter=',')
+    np.savetxt('results/fixed_residuals.csv', fixed_residuals_np, delimiter=',')
     
     print("Generated sample trajectories")
     print(f"Original shape: {xi_np.shape}")
     print(f"xi_filtered shape: {xi_filtered_np.shape}")
-    print(f"All residuals shape: {all_residuals_np.shape}")
+    print(f"Prime residuals shape: {prime_residuals_np.shape}")
+    print(f"Fixed residuals shape: {fixed_residuals_np.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
@@ -531,7 +501,7 @@ def main():
     # visualize_trajectory(xi_np, xi_filtered_np, dof_idx=0, dof=1, dt=0.05)
     
     # # Visualize residuals convergence
-    # visualize_residuals(all_residuals_np, batch_idx=0)
+    # visualize_residuals(prime_residuals_np, batch_idx=0)
 
 if __name__ == "__main__":
     main()
