@@ -20,7 +20,8 @@ class TrajectoryProjector:
                  rho_ineq=1.0,         # Penalty for inequality constraints
                  v_max=1.0,            # Maximum joint velocity
                  a_max=2.0,            # Maximum joint acceleration
-                 j_max=5.0):           # Maximum joint jerk
+                 j_max=5.0,
+                 p_max=180.0*np.pi/180.0):           # Maximum joint jerk
         
         self.num_dof = num_dof
         self.num_steps = num_steps
@@ -35,12 +36,13 @@ class TrajectoryProjector:
         self.v_max = v_max
         self.a_max = a_max
         self.j_max = j_max
+        self.p_max = p_max
         
         # Boundaries
         self.v_start = jnp.zeros(num_dof)
         self.v_goal = jnp.zeros(num_dof)
         
-        # Setup finite difference matrices following code 1 approach
+        # Setup finite difference matrices ach
         self.setup_finite_difference_matrices()
         
         # Setup optimization matrices
@@ -50,22 +52,26 @@ class TrajectoryProjector:
         self.key = jax.random.PRNGKey(0)
     
     def setup_finite_difference_matrices(self):
-        """Create finite difference matrices using jnp.diff like code 1"""
-        # Create identity matrix for velocity (like P_vel in code 1)
+        """Create finite difference matrices using jnp.diff """
+        # Create identity matrix for velocity (like P_vel )
         self.P_vel = jnp.identity(self.num_steps)
         
-        # Create acceleration matrix using diff (like code 1)
+        # Create acceleration matrix using diff ()
         self.P_acc = jnp.diff(self.P_vel, axis=0) / self.t
         
-        # Create jerk matrix using diff of acceleration (like code 1)
+        # Create jerk matrix using diff of acceleration ()
         self.P_jerk = jnp.diff(self.P_acc, axis=0) / self.t
         
+        self.P_pos = jnp.cumsum(self.P_vel, axis=0) * self.t
+        #Create Position matrix using finite difference ()
         # Number of acceleration and jerk constraints
+        
         self.num_acc = self.num_steps - 1
         self.num_jerk = self.num_acc - 1
-    
+        self.num_pos = self.num_steps
+
     def setup_optimization_matrices(self):
-        """Setup matrices following code 1 approach"""
+        """Setup matrices following  approach"""
         
         # For multi-DOF, we need to expand the single-DOF matrices
         # Velocity constraints: [P_vel; -P_vel] for each DOF
@@ -76,14 +82,18 @@ class TrajectoryProjector:
         
         # Jerk constraints: [P_jerk; -P_jerk] for each DOF
         A_jerk_single = jnp.vstack((self.P_jerk, -self.P_jerk))
+
+        #Position constraints: [P_pos; -P_pos] for each DOF
+        A_pos_single = jnp.vstack((self.P_pos, -self.P_pos))
         
         # Expand for multiple DOFs using block diagonal structure
         self.A_vel = jnp.kron(jnp.identity(self.num_dof), A_vel_single)
         self.A_acc = jnp.kron(jnp.identity(self.num_dof), A_acc_single)
         self.A_jerk = jnp.kron(jnp.identity(self.num_dof), A_jerk_single)
+        self.A_pos = jnp.kron(jnp.identity(self.num_dof), A_pos_single)
         
-        # Combined control matrix (like A_control in code 1)
-        self.A_control = jnp.vstack((self.A_vel, self.A_acc, self.A_jerk))
+        # Combined control matrix (like A_control in )
+        self.A_control = jnp.vstack((self.A_vel, self.A_acc, self.A_jerk, self.A_pos))
         
         # Equality constraint matrix (boundary conditions)
         # Constrain first and last velocity for each DOF
@@ -100,7 +110,8 @@ class TrajectoryProjector:
         self.num_vel_constraints = 2 * self.num_steps * self.num_dof
         self.num_acc_constraints = 2 * self.num_acc * self.num_dof
         self.num_jerk_constraints = 2 * self.num_jerk * self.num_dof
-        self.num_total_constraints = self.num_vel_constraints + self.num_acc_constraints + self.num_jerk_constraints
+        self.num_pos_constraints = 2 * self.num_pos * self.num_dof
+        self.num_total_constraints = self.num_vel_constraints + self.num_acc_constraints + self.num_jerk_constraints + self.num_pos_constraints
 
     @partial(jax.jit, static_argnums=(0,))
     def compute_boundary_vec(self):
@@ -113,39 +124,8 @@ class TrajectoryProjector:
     
     @partial(jax.jit, static_argnums=(0,))
     def compute_s_init(self, xi_projected):
-        """Initialize slack variables following code 1 approach"""
+        """Initialize slack variables following  approach"""
         # Create bounds vector
-        b_vel = jnp.hstack((
-            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2)),
-            -self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2))
-        ))
-        
-        b_acc = jnp.hstack((
-            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2)),
-            -self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2))
-        ))
-        
-        b_jerk = jnp.hstack((
-            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2)),
-            -self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2))
-        ))
-        
-        b_control = jnp.hstack((b_vel, b_acc, b_jerk))
-        
-        # Initialize slack variables (like code 1)
-        s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_total_constraints)),
-            -jnp.dot(self.A_control, xi_projected.T).T + b_control
-        )
-        
-        return s
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
-        """
-        Compute feasible control following code 1 approach exactly
-        """
-        # Create bounds vector (following code 1 pattern)
         b_vel = jnp.hstack((
             self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2)),
             self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2))
@@ -161,7 +141,47 @@ class TrajectoryProjector:
             self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2))
         ))
         
-        b_control = jnp.hstack((b_vel, b_acc, b_jerk))
+        b_pos = jnp.hstack((
+            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
+            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
+        ))
+
+        b_control = jnp.hstack((b_vel, b_acc, b_jerk, b_pos))
+
+        # Initialize slack variables ()
+        s = jnp.maximum(
+            jnp.zeros((self.num_batch, self.num_total_constraints)),
+            -jnp.dot(self.A_control, xi_projected.T).T + b_control
+        )
+
+        return s
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
+        """
+        Compute feasible control following  approach exactly
+        """
+        b_vel = jnp.hstack((
+            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2)),
+            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2))
+        ))
+        
+        b_acc = jnp.hstack((
+            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2)),
+            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2))
+        ))
+        
+        b_jerk = jnp.hstack((
+            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2)),
+            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2))
+        ))
+        
+        b_pos = jnp.hstack((
+            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
+            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
+        ))
+
+        b_control = jnp.hstack((b_vel, b_acc, b_jerk, b_pos))
         
         # Augmented bounds with slack variables
         b_control_aug = b_control - s
@@ -169,45 +189,45 @@ class TrajectoryProjector:
         # Boundary conditions
         b_eq = self.compute_boundary_vec()
         
-        # Cost matrix (following code 1 structure)
+        # Cost matrix 
         cost = (jnp.dot(self.A_projection.T, self.A_projection) + 
                 self.rho_ineq * jnp.dot(self.A_control.T, self.A_control))
         
-        # KKT system matrix (like code 1)
+        # KKT system matrix ()
         cost_mat = jnp.vstack((
             jnp.hstack((cost, self.A_eq.T)),
             jnp.hstack((self.A_eq, jnp.zeros((jnp.shape(self.A_eq)[0], jnp.shape(self.A_eq)[0]))))
         ))
         
-        # Linear cost term (following code 1)
+        # Linear cost term (following )
         lincost = (-lamda - 
                   jnp.dot(self.A_projection.T, xi_samples.T).T - 
                   self.rho_ineq * jnp.dot(self.A_control.T, b_control_aug.T).T)
         
-        # Solve KKT system (like code 1)
+        # Solve KKT system ()
         sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
         
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
         
-        # Update slack variables (following code 1)
+        # Update slack variables (following )
         s = jnp.maximum(
             jnp.zeros((self.num_batch, self.num_total_constraints)),
             -jnp.dot(self.A_control, xi_projected.T).T + b_control
         )
         
-        # Compute residual (following code 1)
+        # Compute residual (following )
         res_vec = jnp.dot(self.A_control, xi_projected.T).T - b_control + s
         res_norm = jnp.linalg.norm(res_vec, axis=1)
         
-        # Update Lagrange multipliers (following code 1)
+        # Update Lagrange multipliers (following )
         lamda = lamda - self.rho_ineq * jnp.dot(self.A_control.T, res_vec.T).T
         
         return xi_projected, s, res_norm, lamda
     
     @partial(jax.jit, static_argnums=(0,))
     def compute_projection(self, xi_samples, xi_filtered):
-        """Project sampled trajectories following code 1 approach"""
+        """Project sampled trajectories following  approach"""
         
         # Initialize variables
         xi_projected_init = xi_filtered
@@ -216,7 +236,7 @@ class TrajectoryProjector:
         # Initialize slack variables
         s_init = self.compute_s_init(xi_projected_init)
         
-        # Define scan function (following code 1 structure)
+        # Define scan function (following  structure)
         def lax_custom_projection(carry, idx):
             xi_projected, lamda, s = carry
             xi_projected_prev = xi_projected
@@ -271,6 +291,7 @@ def main():
         v_max=1.0,
         a_max=2.0,
         j_max=3.0,
+        p_max=180.0*np.pi/180.0,
         rho_ineq=1.0,
         rho_projection=1.0,
     )
@@ -307,8 +328,8 @@ def main():
     
     # Save results
     os.makedirs('results_FD', exist_ok=True)
-    np.savetxt('results_FD/original_trajectory.csv', xi_np[0], delimiter=',')  # Save first sample
-    np.savetxt('results_FD/projected_trajectory.csv', xi_filtered_np[0], delimiter=',')
+    np.savetxt('results_FD/original_trajectory.csv', xi_np, delimiter=',')  # Save first sample
+    np.savetxt('results_FD/projected_trajectory.csv', xi_filtered_np, delimiter=',')
     np.savetxt('results_FD/prime_residuals.csv', prime_residuals_np, delimiter=',')
     np.savetxt('results_FD/fixed_residuals.csv', fixed_residuals_np, delimiter=',')
     
