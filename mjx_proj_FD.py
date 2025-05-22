@@ -20,8 +20,9 @@ class TrajectoryProjector:
                  rho_ineq=1.0,         # Penalty for inequality constraints
                  v_max=1.0,            # Maximum joint velocity
                  a_max=2.0,            # Maximum joint acceleration
-                 j_max=5.0,
-                 p_max=180.0*np.pi/180.0):           # Maximum joint jerk
+                 j_max=5.0,              # Maximum joint jerk
+                 p_max=180.0*np.pi/180.0, # Maximum joint displacement from theta_init    
+                 theta_init = 0.0):        
         
         self.num_dof = num_dof
         self.num_steps = num_steps
@@ -39,6 +40,7 @@ class TrajectoryProjector:
         self.p_max = p_max
         
         # Boundaries
+        self.theta_init = theta_init
         self.v_start = jnp.zeros(num_dof)
         self.v_goal = jnp.zeros(num_dof)
         
@@ -142,8 +144,8 @@ class TrajectoryProjector:
         ))
         
         b_pos = jnp.hstack((
-            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
-            self.p_max * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
+            (self.p_max - self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
+            (self.p_max + self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
         ))
 
         b_control = jnp.hstack((b_vel, b_acc, b_jerk, b_pos))
