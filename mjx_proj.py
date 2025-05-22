@@ -4,6 +4,9 @@ import jax
 import jax.numpy as jnp
 from functools import partial
 import time
+import matplotlib
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 
 class TrajectoryProjector:
@@ -255,10 +258,6 @@ class TrajectoryProjector:
                   self.rho_ineq * jnp.dot(self.A_a_ineq.T, b_a_aug.T).T - \
                   self.rho_ineq * jnp.dot(self.A_j_ineq.T, b_j_aug.T).T
         
-        jax.debug.print("lincost max: {}", jnp.max(lincost))
-        jax.debug.print("lincost min: {}", jnp.min(lincost))
-        jax.debug.print("b_eq_term max: {}", jnp.max(b_eq_term))
-        jax.debug.print("b_eq_term min: {}", jnp.min(b_eq_term))
 
         # Solve the QP
         sol = jnp.dot(self.Q_inv,  jnp.hstack(( -lincost, b_eq_term )).T).T
@@ -286,9 +285,7 @@ class TrajectoryProjector:
         
 
         
-        # jax.debug.print("min self.A_j_ineq: {}", jnp.min(self.A_j_ineq))
-        # jax.debug.print("max self.A_j_ineq: {}", jnp.max(self.A_j_ineq))
-        # jax.debug.print("max lamda_a: {}", jnp.max(lamda_a))
+
         
         # Calculate residuals
         res_v_vec = jnp.linalg.norm(res_v, axis=1)
@@ -297,16 +294,8 @@ class TrajectoryProjector:
         
         res_projection = res_v_vec + res_a_vec + res_j_vec
 
-        # jax.debug.print("max res_v_vec: {}", jnp.max(res_v_vec))
-        # jax.debug.print("max res_a_vec: {}", jnp.max(res_a_vec))
-        # jax.debug.print("max res_j_vec: {}", jnp.max(res_j_vec))
-        
-        # jax.debug.print("min res_v_vec: {}", jnp.min(res_v_vec))
-        # jax.debug.print("min res_a_vec: {}", jnp.min(res_a_vec))
-        # jax.debug.print("min res_j_vec: {}", jnp.max(res_j_vec))
-
-        jax.debug.print("max res_projection: {}", jnp.max(res_projection))
-        jax.debug.print("min res_projection: {}", jnp.min(res_projection))
+        # jax.debug.print("max res_projection: {}", jnp.max(res_projection))
+        # jax.debug.print("min res_projection: {}", jnp.min(res_projection))
         
         return primal_sol, s_v, s_a, s_j, lamda_v, lamda_a, lamda_j, res_projection
     
@@ -338,35 +327,8 @@ class TrajectoryProjector:
         for i in range(self.maxiter_projection):
             state = proj_iter(i, state)
         
-        primal_sol, _, _, _, _, _, _, _ = state
-        return primal_sol
-    # @partial(jax.jit, static_argnums=(0,))
-    # def compute_xi_samples(self, key, xi_mean, xi_cov):
-    #     key, subkey = jax.random.split(key)
-    #     xi_samples = jax.random.multivariate_normal(
-    #         subkey, xi_mean, xi_cov + 0.003 * jnp.identity(self.nvar), (self.num_batch,)
-    #     )
-    #     return xi_samples, key
-    
-
-    # @partial(jax.jit, static_argnums=(0,))
-    # def compute_mean_cov(self, cost_ellite, mean_control_prev, cov_control_prev, xi_ellite):
-    #     w = cost_ellite
-    #     w_min = jnp.min(cost_ellite)
-    #     w = jnp.exp(-(1 / self.lamda) * (w - w_min))
-    #     sum_w = jnp.sum(w, axis=0)
-
-    #     mean_control = (1 - self.alpha_mean) * mean_control_prev + \
-    #                 self.alpha_mean * (jnp.sum((xi_ellite * w[:, jnp.newaxis]), axis=0) / sum_w)
-
-    #     diffs = xi_ellite - mean_control
-    #     prod_result = self.vec_product(diffs, w)
-
-    #     cov_control = (1 - self.alpha_cov) * cov_control_prev + \
-    #                 self.alpha_cov * (jnp.sum(prod_result, axis=0) / sum_w) + \
-    #                 0.0001 * jnp.identity(self.nvar)
-
-    #     return mean_control, cov_control
+        primal_sol, _, _, _, _, _, _, res = state
+        return primal_sol, res
     
     @partial(jax.jit, static_argnums=(0,))
     def sample_uniform_trajectories(self, key):
@@ -394,7 +356,7 @@ class TrajectoryProjector:
             xi_samples, self.key = self.compute_xi_samples(self.key, xi_mean, xi_cov)
             
             # Project to feasible trajectories
-            projected_trajectories = self.project_trajectories(xi_samples)
+            projected_trajectories, residuals = self.project_trajectories(xi_samples)
 
             xi_mean = jnp.mean(projected_trajectories, axis=0)
             xi_cov = jnp.cov(projected_trajectories, rowvar=False)
@@ -437,20 +399,20 @@ class TrajectoryProjector:
         
         print(f"Dataset generated with {num_samples} samples in {output_dir}")
 
-def visualize_trajectory(original, projected, dof_idx=0):
+def visualize_trajectory(original, projected, dof_idx=0, dof=1, dt=0.05):
     """Visualize original and projected trajectories for a specific DOF"""
     
-    
-    # Get the number of time steps
-    num_steps = original.shape[0] // 6
+    # Determine number of time steps
+    num_steps = original.shape[0] // dof
     
     # Extract the velocities for the specified DOF
-    orig_vel = original[dof_idx*num_steps:(dof_idx+1)*num_steps]
-    proj_vel = projected[dof_idx*num_steps:(dof_idx+1)*num_steps]
+    orig_vel = original[dof_idx*num_steps : (dof_idx+1)*num_steps]
+    proj_vel = projected[dof_idx*num_steps : (dof_idx+1)*num_steps]
     
     # Create time vector
-    time = np.arange(num_steps) * 0.05  # assuming timestep=0.05
+    time = np.arange(num_steps) * dt  # default timestep=0.05
     
+    # Plot
     plt.figure(figsize=(10, 6))
     plt.plot(time, orig_vel, 'b-', label='Original')
     plt.plot(time, proj_vel, 'r-', label='Projected')
@@ -461,19 +423,26 @@ def visualize_trajectory(original, projected, dof_idx=0):
     plt.title('Original vs Projected Joint Velocity')
     plt.legend()
     plt.grid(True)
-    plt.show()
+    
+    # Use savefig instead of show if in a headless environment
+    try:
+        plt.show()
+    except:
+        plt.savefig(f"trajectory_dof{dof_idx}.png")
+        print(f"Plot saved as trajectory_dof{dof_idx}.png")
+
 
 def main():
     # Initialize the projector
     projector = TrajectoryProjector(
         num_dof=1,
-        num_steps=4,
-        num_batch=2,
+        num_steps=10,
+        num_batch=100,
         timestep=0.05,
-        maxiter_projection=300,
-        v_max=0.1,
-        a_max=0.1,
-        j_max=0.1,
+        maxiter_projection=100,
+        v_max=1.0,
+        a_max=2.0,
+        j_max=3.0,
         rho_ineq= 1.0,
         rho_projection=1.0,
     )
@@ -486,7 +455,9 @@ def main():
     
     # Project the trajectory
     start_time = time.time()
-    xi_filtered = projector.project_trajectories(xi_samples)
+    xi_filtered, residuals = projector.project_trajectories(xi_samples)
+
+    print(f"Residuals shape: {residuals.shape}")
 
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
@@ -500,14 +471,18 @@ def main():
     os.makedirs('results', exist_ok=True)
     np.savetxt('results/original_trajectory.csv', xi_np, delimiter=',')
     np.savetxt('results/projected_trajectory.csv', xi_filtered_np, delimiter=',')
+    np.savetxt('results/residuals.csv', residuals, delimiter=',')
     
     print("Generated sample trajectories")
     print(f"Original shape: {xi_np.shape}")
     print(f"xi_filtered shape: {xi_filtered_np.shape}")
+    print(f"Residuals shape: {residuals.shape}")
     
     # Generate dataset
     # Uncomment to generate a dataset
     # projector.generate_dataset(num_samples=5000, output_dir="trajectory_dataset")
+
+    visualize_trajectory(xi_np, xi_filtered_np, dof_idx=0, dof=1, dt=0.05)
 
 if __name__ == "__main__":
     main()
