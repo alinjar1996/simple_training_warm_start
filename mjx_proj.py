@@ -231,6 +231,7 @@ class TrajectoryProjector:
     def compute_projection(self, xi_samples, xi_filtered):
         """Project sampled trajectories following  approach"""
         
+        #Here input xi_filtered is the initial guess for the projection
         # Initialize variables
         xi_projected_init = xi_filtered
         lamda_init = jnp.zeros((self.num_batch, self.nvar))
