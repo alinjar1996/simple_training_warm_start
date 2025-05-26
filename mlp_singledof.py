@@ -339,15 +339,15 @@ class MLPProjectionFilter(nn.Module):
         
         return c_samples, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
 
-    def mlp_loss(self, avg_res_primal, avg_res_fixed_point, c_samples, c_samples_input):
+    def mlp_loss(self, avg_res_primal, avg_res_fixed_point):
         """Compute loss for optimization"""
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
-        proj_loss = self.rcl_loss(c_samples, c_samples_input)
+        #proj_loss = self.rcl_loss(c_samples, c_samples_input)
 
         # Total loss
-        loss = primal_loss + fixed_point_loss + 0.1 * proj_loss
+        loss = primal_loss + fixed_point_loss #+ 0.1 * proj_loss
 
         return primal_loss, fixed_point_loss, loss
 

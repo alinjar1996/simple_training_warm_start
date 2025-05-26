@@ -217,14 +217,20 @@ class TrajectoryProjector:
             jnp.zeros((self.num_batch, self.num_total_constraints)),
             -jnp.dot(self.A_control, xi_projected.T).T + b_control
         )
+
+        #print("s", (jnp.dot(self.A_control, xi_projected.T).T + b_control).shape)
         
         # Compute residual (following )
         res_vec = jnp.dot(self.A_control, xi_projected.T).T - b_control + s
+
+        #print("res_vec" , res_vec.shape)
         res_norm = jnp.linalg.norm(res_vec, axis=1)
+        #print("res_norm", res_norm.shape)
         
         # Update Lagrange multipliers (following )
         lamda = lamda - self.rho_ineq * jnp.dot(self.A_control.T, res_vec.T).T
         
+        # print("lamda", lamda.shape)
         return xi_projected, s, res_norm, lamda
     
     @partial(jax.jit, static_argnums=(0,))
@@ -235,6 +241,7 @@ class TrajectoryProjector:
         # Initialize variables
         xi_projected_init = xi_filtered
         lamda_init = jnp.zeros((self.num_batch, self.nvar))
+
         
         # Initialize slack variables
         s_init = self.compute_s_init(xi_projected_init)
@@ -248,6 +255,8 @@ class TrajectoryProjector:
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
                 xi_samples, s, xi_projected, lamda)
+            
+            #print("lamda", lamda.shape)
             
             # Compute residuals
             primal_residual = res_norm
