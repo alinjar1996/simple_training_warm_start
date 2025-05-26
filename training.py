@@ -104,17 +104,17 @@ print(type(model))
 
 #Training
 
-epochs = 400
+epochs = 500
 #step, beta = 0, 1.0 # 3.5
-optimizer = optim.AdamW(model.parameters(), lr = 1e-2, weight_decay=1e-3)
+optimizer = optim.AdamW(model.parameters(), lr = 1e-2, weight_decay=1e-4)
 # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
 losses = []
 last_loss = torch.inf
-avg_train_loss, avg_primal_loss, avg_fixed_point_loss = [], [], []
+avg_train_loss, avg_primal_loss, avg_fixed_point_loss, avg_projection_loss = [], [], [], []
 for epoch in range(epochs):
     
     # Train Loop
-    losses_train, primal_losses, fixed_point_losses = [], [], []
+    losses_train, primal_losses, fixed_point_losses, projection_losses = [], [], [], []
     
     for (inp) in tqdm(train_loader):
         
@@ -122,8 +122,8 @@ for epoch in range(epochs):
         inp = inp.to(device)
         
 
-        _, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp)
-        primal_loss, fixed_point_loss, loss = model.mlp_loss(accumulated_res_primal, accumulated_res_fixed_point)
+        xi_projected, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp)
+        primal_loss, fixed_point_loss, projection_loss, loss = model.mlp_loss(accumulated_res_primal, accumulated_res_fixed_point, inp, xi_projected)
 
         
         optimizer.zero_grad() #clears the gradients of the model parameters
@@ -133,10 +133,12 @@ for epoch in range(epochs):
         losses_train.append(loss.detach().cpu().numpy()) 
         primal_losses.append(primal_loss.detach().cpu().numpy())
         fixed_point_losses.append(fixed_point_loss.detach().cpu().numpy())
+        projection_losses.append(projection_loss.detach().cpu().numpy())
         
 
     if epoch % 2 == 0:    
-        print(f"Epoch: {epoch + 1}, Train Loss: {np.average(losses_train):.3f}, primal loss: {np.average(primal_losses):.3f}, fixed_point loss: {np.average(fixed_point_losses):.3f} ")
+        print(f"Epoch: {epoch + 1}, Train Loss: {np.average(losses_train):.4f}, primal loss: {np.average(primal_losses):.4f}, \
+    fixed_point loss: {np.average(fixed_point_losses):.4f}, regression loss: {np.average(projection_losses):.4f}")
 
     #step += 0.07 #0.15
     # scheduler.step()
@@ -146,7 +148,7 @@ for epoch in range(epochs):
             torch.save(model.state_dict(), f"./training_weights/mlp_learned_proj_manipulator.pth")
             last_loss = loss
     avg_train_loss.append(np.average(losses_train)), avg_primal_loss.append(np.average(primal_losses)), \
-    avg_fixed_point_loss.append(np.average(fixed_point_losses))
+    avg_projection_loss.append(np.average(projection_losses)), avg_fixed_point_loss.append(np.average(fixed_point_losses))
 
 
 # Plot training losses

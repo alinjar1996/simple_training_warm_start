@@ -331,16 +331,17 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, avg_res_fixed_point, avg_res_primal, primal_residuals, fixed_point_residuals
 
-    def mlp_loss(self, avg_res_primal, avg_res_fixed_point):
+    def mlp_loss(self, avg_res_primal, avg_res_fixed_point, xi_samples_input_nn, xi_projected_output_nn):
         """Compute loss for optimization"""
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
+        projection_loss = self.rcl_loss(xi_projected_output_nn, xi_samples_input_nn)
 
         # Total loss
-        loss = primal_loss + fixed_point_loss
+        loss = primal_loss + fixed_point_loss + 0.1 * projection_loss
 
-        return primal_loss, fixed_point_loss, loss
+        return primal_loss, fixed_point_loss, projection_loss, loss
 
     def forward(self, xi_samples_input_nn):
         """Forward pass through the model"""
@@ -350,7 +351,7 @@ class MLPProjectionFilter(nn.Module):
         inp_norm = (xi_samples_input_nn - inp_mean) / inp_std
 
         # Decode input to get control
-        c_samples, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
+        xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
             inp_norm, xi_samples_input_nn)
             
-        return c_samples, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
+        return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
