@@ -15,8 +15,8 @@ import scipy.io as sio
 
 from tqdm import trange, tqdm
 
-# Import the single DOF finite difference model
-from mlp_singledof_FD import MLP, MLPProjectionFilter
+# Import the single DOF finite difference model MLP model
+from mlp_singledof import MLP, MLPProjectionFilter
 
 
 class TrajDataset(Dataset):

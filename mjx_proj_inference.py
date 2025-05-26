@@ -9,7 +9,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import jax.lax as lax
 
+#Torch implementations
+import torch 
+import torch.nn as nn 
+import torch.optim as optim
 
+from torch.utils.data import Dataset, DataLoader
+
+# Import the single DOF finite difference model MLP model
+from mlp_singledof import MLP, MLPProjectionFilter
 
 class TrajectoryProjector:
     def __init__(self, 
@@ -296,17 +304,28 @@ class TrajectoryProjector:
         return xi_samples, key
 
 def main():
+    device_torch = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_batch = 1000
+    num_dof=1
+    num_steps=50
+    timestep=0.05
+    v_max=1.0
+    a_max=2.0
+    j_max=5.0
+    p_max=180.0*np.pi/180.0 
+    theta_init=0.0
+ 
     # Initialize the projector
     projector = TrajectoryProjector(
-        num_dof=1,              # Multi-DOF example
-        num_steps=4,
-        num_batch=100,
-        timestep=0.05,
+        num_dof=num_dof,              # Multi-DOF example
+        num_steps=num_steps,
+        num_batch=num_batch,
+        timestep=timestep,
         maxiter_projection=50,  # More iterations to see convergence
-        v_max=1.0,
-        a_max=2.0,
-        j_max=3.0,
-        p_max=180.0*np.pi/180.0,
+        v_max=v_max,
+        a_max=a_max,
+        j_max=j_max,
+        p_max=p_max,
         rho_ineq=1.0,
         rho_projection=1.0,
     )
@@ -319,10 +338,57 @@ def main():
     print(f"Number of variables: {projector.nvar}")
     print(f"Total constraints: {projector.num_total_constraints}")
 
+    ##MLP inference
+    inp = xi_samples
+    enc_inp_dim = np.shape(inp)[1] 
+    mlp_inp_dim = enc_inp_dim
+    hidden_dim = 1024
+    mlp_out_dim = 2*projector.nvar #( xi_samples- 0:nvar, lamda_smples- nvar:2*nvar)
+    print(f"MLP input dimension: {mlp_inp_dim}")
+    print(f"MLP output dimension: {mlp_out_dim}")
+
+    mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
+
+
+
+    model = MLPProjectionFilter(mlp=mlp,num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
+                                timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
+                                theta_init=theta_init).to(device_torch)
+    model.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof.pth'))
+
+    #model.mlp.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof.pth'))
+
+    # Set the model to evaluation mode
+    model.eval()
+
+    inp_torch = torch.from_numpy(np.array(inp)).float().to(device_torch)
+
+    inp_torch_mean, inp_torch_std = inp_torch.mean(), inp_torch.std()
+
+    inp_torch_norm = (inp_torch - inp_torch_mean) / inp_torch_std
+
+    output = model.mlp(inp_torch_norm)
+
+    # Run inference
+    #output = model(inp_torch)
+
+    # xi_projected, avg_res_fixed_point, *_ = output
+
+    output = jnp.array(output.detach().cpu().numpy())
+    
+    # print(f"xi_projected shape: {xi_projected.shape}")
+    # print(f"Average fixed point residual shape: {avg_res_fixed_point.shape()}")
 
     
-    xi_filtered_init = xi_samples
-    lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
+    
+    xi_filtered_init = output[:, :projector.nvar]
+    lamda_init = output[:, projector.nvar: 2*projector.nvar]
+
+
+
+    
+    # xi_filtered_init = xi_samples
+    # lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
 
     
     # Project the trajectories
