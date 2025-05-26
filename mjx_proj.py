@@ -251,6 +251,7 @@ class TrajectoryProjector:
             xi_projected, lamda, s = carry
             xi_projected_prev = xi_projected
             lamda_prev = lamda
+            s_prev = s
             
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
@@ -261,7 +262,8 @@ class TrajectoryProjector:
             # Compute residuals
             primal_residual = res_norm
             fixed_point_residual = (jnp.linalg.norm(xi_projected_prev - xi_projected, axis=1) + 
-                                  jnp.linalg.norm(lamda_prev - lamda, axis=1))
+                                  jnp.linalg.norm(lamda_prev - lamda, axis=1) +
+                                  jnp.linalg.norm(s_prev - s, axis=1))
             
             return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
         

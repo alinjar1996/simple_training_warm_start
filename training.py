@@ -107,7 +107,8 @@ print(type(model))
 epochs = 500
 #step, beta = 0, 1.0 # 3.5
 optimizer = optim.AdamW(model.parameters(), lr = 1e-2, weight_decay=1e-4)
-# scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1)
+#scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1, verbose=True)
+
 losses = []
 last_loss = torch.inf
 avg_train_loss, avg_primal_loss, avg_fixed_point_loss, avg_projection_loss = [], [], [], []
@@ -128,7 +129,23 @@ for epoch in range(epochs):
         
         optimizer.zero_grad() #clears the gradients of the model parameters
         loss.backward() #computes the gradients of the model parameters
-        optimizer.step() #updates the model parameters
+        
+        
+        #Gradient Norm check
+        total_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)  # L2 norm
+                total_norm += param_norm.item() ** 2
+
+        total_norm = total_norm ** 0.5
+        print(f"Gradient L2 norm: {total_norm:.4f}")
+        
+        ##Gradient Norm clipping
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+
+        optimizer.step() #updates the model parameters (e.g. weights and biases)
         
         losses_train.append(loss.detach().cpu().numpy()) 
         primal_losses.append(primal_loss.detach().cpu().numpy())
@@ -141,7 +158,7 @@ for epoch in range(epochs):
     fixed_point loss: {np.average(fixed_point_losses):.4f}, regression loss: {np.average(projection_losses):.4f}")
 
     #step += 0.07 #0.15
-    # scheduler.step()
+    #scheduler.step()
     
     os.makedirs("./training_weights", exist_ok=True)
     if loss <= last_loss:
