@@ -72,20 +72,27 @@ nvar = num_dof * nvar_single
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device} device")
 
+#For training
 xi_samples, rng = sample_uniform_trajectories(42, v_max, num_batch, nvar)
 
+#For validation
+xi_val, rng_val = sample_uniform_trajectories(43, v_max*5.0, num_batch, nvar)
+
 inp = xi_samples
+inp_val = xi_val
 
-inp_mean, inp_std = inp.mean(), inp.std()
+# inp_mean, inp_std = inp.mean(), inp.std()
 
-print("inp", inp.shape)
+# print("inp", inp.shape)
 
 
 
 # Using PyTorch Dataloader
 train_dataset = TrajDataset(inp)
+val_dataset = TrajDataset(inp_val)
 
 train_loader = DataLoader(train_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
+val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)  
 
 enc_inp_dim = np.shape(inp)[1] 
 mlp_inp_dim = enc_inp_dim
@@ -112,6 +119,7 @@ optimizer = optim.AdamW(model.parameters(), lr = 1e-2, weight_decay=1e-4)
 losses = []
 last_loss = torch.inf
 avg_train_loss, avg_primal_loss, avg_fixed_point_loss, avg_projection_loss = [], [], [], []
+avg_val_loss = []
 for epoch in range(epochs):
     
     # Train Loop
@@ -131,15 +139,15 @@ for epoch in range(epochs):
         loss.backward() #computes the gradients of the model parameters
         
         
-        #Gradient Norm check
-        total_norm = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)  # L2 norm
-                total_norm += param_norm.item() ** 2
+        # #Gradient Norm check
+        # total_norm = 0.0
+        # for p in model.parameters():
+        #     if p.grad is not None:
+        #         param_norm = p.grad.data.norm(2)  # L2 norm
+        #         total_norm += param_norm.item() ** 2
 
-        total_norm = total_norm ** 0.5
-        print(f"Gradient L2 norm: {total_norm:.4f}")
+        # total_norm = total_norm ** 0.5
+        # print(f"Gradient L2 norm: {total_norm:.4f}")
         
         ##Gradient Norm clipping
         #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -152,20 +160,49 @@ for epoch in range(epochs):
         fixed_point_losses.append(fixed_point_loss.detach().cpu().numpy())
         projection_losses.append(projection_loss.detach().cpu().numpy())
         
+    if epoch % 2 == 0:
+        
+        # Validation 
+        model.eval()
+        val_losses = []
+
+        with torch.no_grad():
+            for (inp_val) in tqdm(val_loader):
+                inp_val = inp_val.to(device)
+
+                xi_projected, accumulated_res_fixed_point, accumulated_res_primal, \
+                accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp_val)
+
+                _, _, _, val_loss = model.mlp_loss(
+                    accumulated_res_primal, accumulated_res_fixed_point, inp_val, xi_projected
+                )
+
+                val_losses.append(val_loss.detach().cpu().numpy())
+
+                print(f"Validation Loss: {np.average(val_losses):.4f}")
+            
 
     if epoch % 2 == 0:    
         print(f"Epoch: {epoch + 1}, Train Loss: {np.average(losses_train):.4f}, primal loss: {np.average(primal_losses):.4f}, \
-    fixed_point loss: {np.average(fixed_point_losses):.4f}, regression loss: {np.average(projection_losses):.4f}")
+    fixed_point loss: {np.average(fixed_point_losses):.4f}, projection loss: {np.average(projection_losses):.4f}")
+        
+
 
     #step += 0.07 #0.15
     #scheduler.step()
+
+    # mean_train_loss = np.mean(losses_train)
+    # mean_val_loss = np.mean(val_losses)
     
     os.makedirs("./training_weights", exist_ok=True)
+    #if mean_val_loss <= last_loss:
     if loss <= last_loss:
-            torch.save(model.state_dict(), f"./training_weights/mlp_learned_proj_manipulator.pth")
+            torch.save(model.state_dict(), f"./training_weights/mlp_learned_single_dof.pth")
             last_loss = loss
+
     avg_train_loss.append(np.average(losses_train)), avg_primal_loss.append(np.average(primal_losses)), \
     avg_projection_loss.append(np.average(projection_losses)), avg_fixed_point_loss.append(np.average(fixed_point_losses))
+    avg_val_loss.append(np.average(val_losses))
 
 
 # Plot training losses

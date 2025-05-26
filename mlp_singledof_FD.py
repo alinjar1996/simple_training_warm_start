@@ -20,14 +20,17 @@ class MLP(nn.Module):
             nn.Linear(inp_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            
+            nn.Dropout(0.2),  # Dropout with 20% probability
+
             nn.Linear(hidden_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
+            nn.Dropout(0.2),  # Dropout with 20% probability
             
             nn.Linear(hidden_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
+            nn.Dropout(0.2),  # Dropout with 20% probability
             
             nn.Linear(256, out_dim),
         )
