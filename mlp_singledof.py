@@ -44,7 +44,7 @@ class MLPProjectionFilter(nn.Module):
     def __init__(self, mlp = MLP, num_batch = 1000, 
                  num_dof=1, num_steps=50, timestep=0.05, 
                  v_max=1.0, a_max=2.0, j_max=5.0, 
-                 p_max=180.0*np.pi/180.0, theta_init=0.0):
+                 p_max=180.0*np.pi/180.0, theta_init=0.0, maxiter_projection=20):
         super(MLPProjectionFilter, self).__init__()
         
         # MLP Model
@@ -73,18 +73,16 @@ class MLPProjectionFilter(nn.Module):
         self.A_projection = torch.eye(self.nvar, device=device)
         self.rho_ineq = 1.0
         self.rho_projection = 1.0
+
+        # Solver parameters
+        self.maxiter_projection = maxiter_projection
         
         # Setup finite difference matrices
         self.setup_finite_difference_matrices()
         
         # Setup optimization matrices
         self.setup_optimization_matrices()
-        
-
-        
-        # Solver parameters
-        self.maxiter = 15
-        
+            
         
         # Loss function
         self.rcl_loss = nn.MSELoss()
@@ -288,7 +286,7 @@ class MLPProjectionFilter(nn.Module):
         fixed_point_residuals = []
         
         # Projection iterations
-        for idx in range(self.maxiter):
+        for idx in range(self.maxiter_projection):
             xi_projected_prev = xi_projected.clone()
             lamda_prev = lamda.clone()
             s_prev = s.clone()

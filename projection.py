@@ -17,7 +17,7 @@ class TrajectoryProjector:
                  num_steps=50,         # Number of time steps in trajectory
                  num_batch=500,        # Batch size for parallel processing
                  timestep=0.05,        # Time step size in seconds
-                 maxiter_projection=10,# Maximum iterations for projection
+                 maxiter_projection=20,# Maximum iterations for projection
                  rho_projection=1.0,   # ADMM penalty parameter
                  rho_ineq=1.0,         # Penalty for inequality constraints
                  v_max=1.0,            # Maximum joint velocity
@@ -302,7 +302,7 @@ def main():
         num_steps=4,
         num_batch=100,
         timestep=0.05,
-        maxiter_projection=50,  # More iterations to see convergence
+        maxiter_projection=20,  # More iterations to see convergence
         v_max=1.0,
         a_max=2.0,
         j_max=3.0,
