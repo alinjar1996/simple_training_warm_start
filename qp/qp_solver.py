@@ -25,6 +25,13 @@ class QPSolver():
             self.L[i*n:(i+1)*n, i*n:(i+1)*n] = self.L_i*(decay**i)
             self.K[i*m:(i+1)*m, i*m:(i+1)*m] = self.K_i*(decay**i)
 
+        # L = self.L
+        # K = self.K    
+
+        # print("Full cost Matrix printed")    
+        # return L, K
+   
+
 
     # def solveQP(self, A_qp, B_qp, x_init, x_ref, force_constraints):
 
