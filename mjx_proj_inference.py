@@ -18,6 +18,8 @@ from torch.utils.data import Dataset, DataLoader
 
 # Import the single DOF finite difference model MLP model
 from mlp_singledof import MLP, MLPProjectionFilter
+import jax.dlpack
+import torch.utils.dlpack as torch_dlpack
 
 class TrajectoryProjector:
     def __init__(self, 
@@ -354,39 +356,36 @@ def main():
     model = MLPProjectionFilter(mlp=mlp,num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
                                 timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
                                 theta_init=theta_init).to(device_torch)
-    model.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof.pth'))
+    
+    # Safely load weights
+    model.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof.pth', weights_only=True))
+
 
     #model.mlp.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof.pth'))
 
     # Set the model to evaluation mode
     model.eval()
-
+    
+    # Convert the input to a PyTorch tensor
     inp_torch = torch.from_numpy(np.array(inp)).float().to(device_torch)
 
     inp_torch_mean, inp_torch_std = inp_torch.mean(), inp_torch.std()
 
     inp_torch_norm = (inp_torch - inp_torch_mean) / inp_torch_std
 
-    output = model.mlp(inp_torch_norm)
+    #output = model.mlp(inp_torch_norm)
 
     # Run inference
-    #output = model(inp_torch)
+    with torch.no_grad():
+        output_torch = mlp(inp_torch_norm)
+        output = jax.dlpack.from_dlpack(output_torch)
 
-    # xi_projected, avg_res_fixed_point, *_ = output
-
-    output = jnp.array(output.detach().cpu().numpy())
-    
-    # print(f"xi_projected shape: {xi_projected.shape}")
-    # print(f"Average fixed point residual shape: {avg_res_fixed_point.shape()}")
-
-    
+    print(f"Output shape: {output.shape}")    
     
     xi_filtered_init = output[:, :projector.nvar]
     lamda_init = output[:, projector.nvar: 2*projector.nvar]
 
 
-
-    
     # xi_filtered_init = xi_samples
     # lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
 
@@ -410,6 +409,11 @@ def main():
     
     print(f"Prime residuals shape: {prime_residuals_np.shape}")
     print(f"Fixed point residuals shape: {fixed_residuals_np.shape}")
+
+    print(f"Max Prime residuals end: {max(prime_residuals_np[-1])}")
+    print(f"Max fixed residuals end: {max(fixed_residuals_np[-1])}")
+    print(f"Min Prime residuals end: {min(prime_residuals_np[-1])}")
+    print(f"Min fixed residuals end: {min(fixed_residuals_np[-1])}")
     
     # Save results
     os.makedirs('results_FD', exist_ok=True)
@@ -424,7 +428,7 @@ def main():
     # # Visualize residuals convergence
     # visualize_residuals(prime_residuals_np, fixed_residuals_np, batch_idx=0)
     
-    print("Analysis complete. Check the generated plots and saved CSV files.")
+    print("Analysis complete. Check the saved CSV files.")
 
 if __name__ == "__main__":
     main()

@@ -205,17 +205,17 @@ for epoch in range(epochs):
     avg_val_loss.append(np.average(val_losses))
 
 
-# Plot training losses
-plt.figure(figsize=(12, 6))
+# # Plot training losses
+# plt.figure(figsize=(12, 6))
 
-plt.plot(avg_train_loss, label='Total Loss')
-plt.plot(avg_primal_loss, label='Primal Loss')
-plt.plot(avg_fixed_point_loss, label='Fixed-Point Loss')
+# plt.plot(avg_train_loss, label='Total Loss')
+# plt.plot(avg_primal_loss, label='Primal Loss')
+# plt.plot(avg_fixed_point_loss, label='Fixed-Point Loss')
 
-plt.title('Training Loss Curves')
-plt.xlabel('Epoch')
-plt.ylabel('Loss')
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+# plt.title('Training Loss Curves')
+# plt.xlabel('Epoch')
+# plt.ylabel('Loss')
+# plt.legend()
+# plt.grid(True)
+# plt.tight_layout()
+# plt.show()
