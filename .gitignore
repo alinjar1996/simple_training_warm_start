@@ -1,6 +1,9 @@
 *.csv
 *.pyc
 *.npz
+*.pth
+
+
 
 
 
