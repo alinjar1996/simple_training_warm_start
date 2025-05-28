@@ -266,7 +266,7 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output):
+    def compute_projection(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
@@ -275,7 +275,7 @@ class MLPProjectionFilter(nn.Module):
         #lamda_init = torch.zeros((self.num_batch, self.nvar), device=device)
         
         # Initialize slack variables
-        s_init = self.compute_s_init(xi_projected_init)
+        s_init = s_init_nn_output #self.compute_s_init(xi_projected_init)
         
         # Initialize tracking variables
         xi_projected = xi_projected_init
@@ -297,8 +297,7 @@ class MLPProjectionFilter(nn.Module):
             
             # Compute residuals
             primal_residual = res_norm
-            fixed_point_residual = (torch.linalg.norm(xi_projected_prev - xi_projected, dim=1) + 
-                                  torch.linalg.norm(lamda_prev - lamda, dim=1) + 
+            fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
                                   torch.linalg.norm(s_prev - s, dim=1))
             
             primal_residuals.append(primal_residual)
@@ -320,11 +319,14 @@ class MLPProjectionFilter(nn.Module):
         # In practice, you might want to structure this differently
         xi_projected_output_nn = neural_output_batch[:, :self.nvar]
         lamda_init_nn_output = neural_output_batch[:, self.nvar: 2*self.nvar]
+        s_init_nn_output = neural_output_batch[:, 2*self.nvar: 2*self.nvar + self.num_total_constraints]
+
+        s_init_nn_output = torch.maximum( torch.zeros(( self.num_batch, self.num_total_constraints ), device = device), s_init_nn_output)
 
         
         # Run projection
         xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection(
-            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output)
+            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output)
         
         # Compute average residuals
         avg_res_primal = torch.mean(primal_residuals, dim=0)
@@ -337,7 +339,7 @@ class MLPProjectionFilter(nn.Module):
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
-        projection_loss = self.rcl_loss(xi_projected_output_nn, xi_samples_input_nn)
+        projection_loss = 0.5* self.rcl_loss(xi_projected_output_nn, xi_samples_input_nn)
 
         # Total loss
         loss = primal_loss + fixed_point_loss + 0.1 * projection_loss

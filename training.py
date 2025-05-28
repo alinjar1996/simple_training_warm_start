@@ -68,6 +68,18 @@ nvar_single = num_steps
 nvar = num_dof * nvar_single
 
 
+#calculating number of constraints
+num_acc = num_steps - 1
+num_jerk = num_acc - 1
+num_pos = num_steps
+num_vel_constraints = 2 * num_steps * num_dof
+num_acc_constraints = 2 * num_acc * num_dof
+num_jerk_constraints = 2 * num_jerk * num_dof
+num_pos_constraints = 2 * num_pos * num_dof
+num_total_constraints = (num_vel_constraints + num_acc_constraints + 
+                            num_jerk_constraints + num_pos_constraints)
+
+
 # Cell 3
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device} device")
@@ -97,7 +109,7 @@ val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_wo
 enc_inp_dim = np.shape(inp)[1] 
 mlp_inp_dim = enc_inp_dim
 hidden_dim = 1024
-mlp_out_dim = 2*nvar #( xi_samples- 0:nvar, lamda_smples- nvar:2*nvar)
+mlp_out_dim = 2*nvar + num_total_constraints #( xi_samples- 0:nvar, lamda_smples- nvar:2*nvar)
 
 mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
@@ -113,7 +125,7 @@ print(type(model))
 
 epochs = 500
 #step, beta = 0, 1.0 # 3.5
-optimizer = optim.AdamW(model.parameters(), lr = 1e-2, weight_decay=1e-4)
+optimizer = optim.AdamW(model.parameters(), lr = 1e-5, weight_decay=6e-5)
 #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1, verbose=True)
 
 losses = []
@@ -179,7 +191,7 @@ for epoch in range(epochs):
 
                 val_losses.append(val_loss.detach().cpu().numpy())
 
-                print(f"Validation Loss: {np.average(val_losses):.4f}")
+                #print(f"Validation Loss: {np.average(val_losses):.4f}")
             
 
     if epoch % 2 == 0:    

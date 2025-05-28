@@ -318,8 +318,6 @@ def main():
     print(f"Number of variables: {projector.nvar}")
     print(f"Total constraints: {projector.num_total_constraints}")
 
-
-    
     
     lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
     s_init = jnp.zeros((projector.num_batch, projector.num_total_constraints))
