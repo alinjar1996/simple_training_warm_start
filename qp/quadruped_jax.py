@@ -137,9 +137,9 @@ class QuadrupedQPProjector:
 
         b_control = jnp.hstack((b_upper, b_lower))
 
-        jax.debug.print("xi_projected: {0}", jnp.shape(xi_projected))
-        jax.debug.print("b_control: {0}", jnp.shape(b_control))
-        jax.debug.print("self.A_control: {0}", jnp.shape(self.A_control))
+        # jax.debug.print("xi_projected: {0}", jnp.shape(xi_projected))
+        # jax.debug.print("b_control: {0}", jnp.shape(b_control))
+        # jax.debug.print("self.A_control: {0}", jnp.shape(self.A_control))
 
         # Initialize slack variables ()
         s = jnp.maximum(
