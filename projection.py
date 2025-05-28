@@ -236,21 +236,21 @@ class TrajectoryProjector:
         return xi_projected, s, res_norm, lamda
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_projection(self, xi_samples, xi_filtered, lamda_init):
+    def compute_projection(self, xi_samples, lamda_init, s_init):
         """Project sampled trajectories following  approach"""
         
         #Here input xi_filtered is the initial guess for the projection
         # Initialize variables
-        xi_projected_init = xi_filtered
+        xi_projected_init = xi_samples
 
         
         # Initialize slack variables
-        s_init = self.compute_s_init(xi_projected_init)
+        #s_init = self.compute_s_init(xi_projected_init)
         
         # Define scan function (following  structure)
         def lax_custom_projection(carry, idx):
             xi_projected, lamda, s = carry
-            xi_projected_prev = xi_projected
+            #xi_projected_prev = xi_projected
             lamda_prev = lamda
             s_prev = s
             
@@ -262,8 +262,7 @@ class TrajectoryProjector:
             
             # Compute residuals
             primal_residual = res_norm
-            fixed_point_residual = (jnp.linalg.norm(xi_projected_prev - xi_projected, axis=1) + 
-                                  jnp.linalg.norm(lamda_prev - lamda, axis=1) +
+            fixed_point_residual = (jnp.linalg.norm(lamda_prev - lamda, axis=1) +
                                   jnp.linalg.norm(s_prev - s, axis=1))
             
             return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
@@ -299,8 +298,8 @@ def main():
     # Initialize the projector
     projector = TrajectoryProjector(
         num_dof=1,              # Multi-DOF example
-        num_steps=4,
-        num_batch=100,
+        num_steps=100,
+        num_batch=200,
         timestep=0.05,
         maxiter_projection=20,  # More iterations to see convergence
         v_max=1.0,
@@ -321,14 +320,15 @@ def main():
 
 
     
-    xi_filtered_init = xi_samples
+    
     lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
+    s_init = jnp.zeros((projector.num_batch, projector.num_total_constraints))
 
     
     # Project the trajectories
     start_time = time.time()
     xi_filtered, prime_residuals, fixed_point_residuals = projector.compute_projection(
-        xi_samples, xi_filtered_init, lamda_init)
+        xi_samples, lamda_init, s_init)
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
     # Convert to numpy for analysis
@@ -359,6 +359,18 @@ def main():
     # visualize_residuals(prime_residuals_np, fixed_residuals_np, batch_idx=0)
     
     print("Analysis complete. Check the generated plots and saved CSV files.")
+
+    print('start')
+    print(f'Max Fixed point residual: {max(fixed_point_residuals[0])}')
+    print(f'Max Prime residual: {max(prime_residuals[0])}')
+    print(f'Min Fixed point residual: {min(fixed_point_residuals[0])}')
+    print(f'Min Prime residual: {min(prime_residuals[0])}')
+
+    print('end')
+    print(f'Max Fixed point residual: {max(fixed_point_residuals[-1])}')
+    print(f'Max Prime residual: {max(prime_residuals[-1])}')
+    print(f'Min Fixed point residual: {min(fixed_point_residuals[-1])}')
+    print(f'Min Prime residual: {min(prime_residuals[-1])}')
 
 if __name__ == "__main__":
     main()
