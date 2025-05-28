@@ -1,138 +1,364 @@
 import jax
 import jax.numpy as jnp
 from functools import partial
+import numpy as np
+import time
 
 from stance_leg_controller import ForceStanceLegController
 
 class QuadrupedQPProjector:
-    def __init__(self, H, g, C, c, cb, num_batch, maxiter, rho):
+    def __init__(self, 
+                 num_batch=10,           # Batch size for parallel processing
+                 maxiter=10,             # Maximum iterations for ADMM
+                 rho=1.0,                # ADMM penalty parameter
+                 desired_speed=(0.0, 0.0),
+                 desired_twisting_speed=0.0,
+                 desired_body_height=0.5,
+                 body_mass=30.0,
+                 body_inertia=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                 num_legs=4,
+                 friction_coeff=0.2,
+                 timestep=0.05,
+                 horizon=10,
+                 foot_x=0.2,
+                 foot_y=0.2,
+                 foot_z=-0.5):
+        
+        # Store parameters
+        self.num_batch = num_batch
+        self.maxiter = maxiter
+        self.rho = rho
+        
+        # Quadruped parameters
+        self.desired_speed = desired_speed
+        self.desired_twisting_speed = desired_twisting_speed
+        self.desired_body_height = desired_body_height
+        self.body_mass = body_mass
+        self.body_inertia = body_inertia
+        self.num_legs = num_legs
+        self.friction_coeff = friction_coeff
+        self.timestep = timestep
+        self.horizon = horizon
+        
+        # Foot positions
+        self.foot_x = foot_x
+        self.foot_y = foot_y
+        self.foot_z = foot_z
+        
+        # Setup quadruped matrices
+        self.setup_quadruped_matrices()
+        
+        # Setup optimization matrices
+        self.setup_optimization_matrices()
+        
+        # Setup random key for JAX
+        self.key = jax.random.PRNGKey(0)
+
+    def setup_quadruped_matrices(self):
+        """Setup foot positions and default states for quadruped"""
+        # Foot positions in body frame
+        FootPositionsInBodyFrame = jnp.array([
+            self.foot_x, self.foot_y, self.foot_z,
+            -self.foot_x, self.foot_y, self.foot_z,
+            self.foot_x, -self.foot_y, self.foot_z,
+            -self.foot_x, -self.foot_y, self.foot_z
+        ])
+        self.FootPositionsInBodyFrame = FootPositionsInBodyFrame.reshape(4, 3)
+        
+        # Default states
+        self.BaseRollPitchYaw = (0.0, 0.0, 0.0)
+        self.AngularVelocityBodyFrame = (0.0, 0.0, 0.0)
+        self.ComVelocityBodyFrame = (0.0, 0.0, 0.0)
+        self.FootContacts = (True, True, True, True)
+        self.slope_estimate = (0.0, 0.0, 0.0)
+        self.RotationBodyWrtWorld = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+    def setup_optimization_matrices(self):
+        """Setup QP matrices using ForceStanceLegController"""
+        # Create controller instance
+        controller = ForceStanceLegController(
+            desired_speed=self.desired_speed,
+            desired_twisting_speed=self.desired_twisting_speed,
+            desired_body_height=self.desired_body_height,
+            body_mass=self.body_mass,
+            body_inertia=self.body_inertia,
+            num_legs=self.num_legs,
+            friction_coeff=self.friction_coeff,
+            timestep=self.timestep,
+            horizon=self.horizon
+        )
+        
+        # Get QP matrices
+        H, g, C, c = controller.getMatrices(
+            BaseRollPitchYaw=self.BaseRollPitchYaw,
+            AngularVelocityBodyFrame=self.AngularVelocityBodyFrame,
+            ComVelocityBodyFrame=self.ComVelocityBodyFrame,
+            FootPositionsInBodyFrame=self.FootPositionsInBodyFrame,
+            FootContacts=self.FootContacts,
+            slope_estimate=self.slope_estimate,
+            RotationBodyWrtWorld=self.RotationBodyWrtWorld
+        )
+        
+        # Store matrices
         self.H = H                       # QP Hessian (3nk x 3nk)
         self.g = g                       # Linear term (3nk)
         self.C = C                       # Constraint matrix (num_constraints x 3nk)
-        self.c = c                       # Lower bound (num_constraints)
-        self.cb = cb                     # Upper bound (num_constraints)
+        self.c_lower = c                       # Lower bound (num_constraints)
+        self.c_upper = -c                     # Upper bound (num_constraints)
+        
+        # Dimensions
+        self.nvar = H.shape[0]         # 3nk
+        
+        print("self.H.shape", self.H.shape)
+        print("self.nvar", self.nvar)
+        
+        # Precompute ADMM matrix
+        self.H_rho = H + self.rho * C.T @ C
 
-        self.num_batch = num_batch       # Batch size
-        self.nvar = H.shape[0]           # 3nk
-        self.num_constraints = C.shape[0]
+        self.A_projection = jnp.identity(self.nvar)
 
-        self.rho = rho                   # ADMM penalty
-        self.maxiter = maxiter
+        self.A_control = jnp.vstack((self.C,-self.C)) 
 
-        self.H_rho = H + rho * C.T @ C
+        self.num_constraints = self.A_control.shape[0] #Since stacking them later
+        print("self.num_constraints", self.num_constraints)
+
+
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_s_init(self, xi_projected):
+        """Initialize slack variables following  approach"""
+
+
+        
+
+        b_upper = jnp.tile(self.c_upper.reshape(1, -1), (self.num_batch, 1))
+        b_lower = jnp.tile(self.c_lower.reshape(1, -1), (self.num_batch, 1))
+        
+
+        b_control = jnp.hstack((b_upper, b_lower))
+
+        jax.debug.print("xi_projected: {0}", jnp.shape(xi_projected))
+        jax.debug.print("b_control: {0}", jnp.shape(b_control))
+        jax.debug.print("self.A_control: {0}", jnp.shape(self.A_control))
+
+        # Initialize slack variables ()
+        s = jnp.maximum(
+            jnp.zeros((self.num_batch, self.num_constraints)),
+            -jnp.dot(self.A_control, xi_projected.T).T + b_control
+        )
+
+        return s
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
+        """
+        Compute feasible control following  approach exactly
+        """
+        
+
+        b_upper = jnp.tile(self.c_upper.reshape(1, -1), (self.num_batch, 1))
+        b_lower = jnp.tile(self.c_lower.reshape(1, -1), (self.num_batch, 1))
+        
+
+        b_control = jnp.hstack((b_upper, b_lower))
+        
+        # Augmented bounds with slack variables
+        b_control_aug = b_control - s
+        
+        # Cost matrix 
+        cost = (jnp.dot(self.A_projection.T, self.A_projection) + 
+                self.rho * jnp.dot(self.A_control.T, self.A_control))
+        
+        # KKT system matrix ()
+        cost_mat = cost
+        
+        # Linear cost term (following )
+        lincost = (-lamda - 
+                  jnp.dot(self.A_projection.T, xi_samples.T).T - 
+                  self.rho * jnp.dot(self.A_control.T, b_control_aug.T).T)
+        
+        # Solve KKT system ()
+        sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
+        
+        # Extract primal solution
+        xi_projected = sol[:, 0:self.nvar]
+        
+        # Update slack variables (following )
+        s = jnp.maximum(
+            jnp.zeros((self.num_batch, self.num_constraints)),
+            -jnp.dot(self.A_control, xi_projected.T).T + b_control
+        )
+
+
+
+
+        #print("s", (jnp.dot(self.A_control, xi_projected.T).T + b_control).shape)
+        
+        # Compute residual (following )
+        res_vec = jnp.dot(self.A_control, xi_projected.T).T - b_control + s
+
+        #print("res_vec" , res_vec.shape)
+        res_norm = jnp.linalg.norm(res_vec, axis=1)
+        #print("res_norm", res_norm.shape)
+        
+        # Update Lagrange multipliers (following )
+        lamda = lamda - self.rho * jnp.dot(self.A_control.T, res_vec.T).T
+
+        
+        # print("lamda", lamda.shape)
+        return xi_projected, s, res_norm, lamda
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_qp(self, xi_init, lam_init):
-        """ Run ADMM iterations to project xi_init onto constraints"""
+    def compute_qp_projection(self, xi_samples, xi_init, lamda_init):
+        """Run batched ADMM iterations to project xi_init onto constraints"""
 
+        xi_projected_init = xi_init
+        
+        s_init = self.compute_s_init(xi_projected_init)
 
-
+        
         def lax_custom_qp(carry, _):
-            xi, lam = carry
+            
+            xi_projected, lamda, s = carry
 
-            # U-update: solve (H + rho * C^T C) x = -g + rho C^T(z - lam)
-            lincost = -self.g + self.rho * self.C.T @ (jnp.clip(self.C @ xi + lam, self.c, self.cb) - lam)
-            xi_new = jnp.linalg.solve(self.H_rho, lincost)
+            xi_prev = xi_projected
+            lamda_prev = lamda
+            s_prev = s
 
-            # Z-update: project to box
-            # Slack variable
-            s = jnp.clip(self.C @ xi_new + lam, self.c, self.cb)
-
-            # Dual update
-            lam_new = lam + self.C @ xi_new - s
-
-            # Residuals
-            primal_res = jnp.linalg.norm(self.C @ xi_new - s)
-            dual_res = jnp.linalg.norm(xi_new - xi)
-
-            return (xi_new, lam_new), (primal_res, dual_res)
+            xi_projected, s, res_norm, lamda = self.compute_feasible_control(xi_samples, s, xi_projected, lamda)
+            # xi_new, lamda_new, primal_residual, fixed_point_residual = self.compute_feasible_control(xi, s_init, xi_projected, lamda)
+            primal_residual = res_norm
+            fixed_point_residual = (jnp.linalg.norm(xi_projected - xi_prev, axis=1) + 
+                                  jnp.linalg.norm(lamda - lamda_prev, axis=1) +
+                                  jnp.linalg.norm(s - s_prev, axis=1))
+            return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
 
         # Initialize
-        carry_init = (xi_init, lam_init)
-        carry_final, (primal_resid, dual_resid) = jax.lax.scan(lax_custom_qp, carry_init, xs=None, length=self.maxiter)
+         # Initialize carry
+        carry_init = (xi_projected_init, lamda_init, s_init)
+    
+        carry_final, (primal_residual, fixed_point_residual) = jax.lax.scan(
+            lax_custom_qp, carry_init, xs=None, length=self.maxiter
+        )
 
-        xi_final, lam_final = carry_final
-        return xi_final, lam_final, primal_resid, dual_resid
+        xi_projected, lamda, s = carry_final
 
+        #xi_final, lamda_final = carry_final
+        return xi_projected, primal_residual, fixed_point_residual
+
+    
+    @partial(jax.jit, static_argnums=(0,))
+    def sample_uniform_forces(self, key, F_min=-10.0, F_max=10.0):
+        """Sample batched force trajectories uniformly between F_min and F_max"""
+        key, subkey = jax.random.split(key)
+        xi_samples = jax.random.uniform(
+            key, 
+            shape=(self.num_batch, self.nvar), 
+            minval=F_min, 
+            maxval=F_max
+        )
+        return xi_samples, key
+
+    def print_problem_info(self):
+        """Print information about the QP problem dimensions"""
+        print("=== Quadruped QP Problem Information ===")
+        print(f"H matrix shape: {self.H.shape}")
+        print(f"g vector shape: {self.g.shape}")
+        print(f"C matrix shape: {self.C.shape}")
+        print(f"lower limit vector shape: {self.c_lower.shape}")
+        print(f"upper limit vector shape: {self.c_upper.shape}")
+        print(f"Number of variables: {self.nvar}")
+        print(f"Number of constraints: {self.num_constraints}")
+        print(f"Batch size: {self.num_batch}")
+        print(f"Max iterations: {self.maxiter}")
+        print(f"ADMM penalty (rho): {self.rho}")
+        print("=" * 40)
 
 def main():
-    # Placeholder dimensions
-
-
-    # Example QP matrices
-    key = jax.random.PRNGKey(0)
-
-    foot_x = 0.2
-    foot_y = 0.2
-    foot_z = -0.5
-    FootPositionsInBodyFrame = jnp.array([foot_x,foot_y,foot_z,-foot_x,foot_y,foot_z,foot_x,-foot_y,foot_z,-foot_x,-foot_y,foot_z])
+    """Main function demonstrating the batched quadruped QP projector"""
     
-
-    desired_speed= (0.0,0.0)
-    desired_twisting_speed= 0.0
+    num_batch=100  # Increased batch size to demonstrate batching
+    maxiter=2000
+    rho=1.0
+    desired_speed=(0.0, 0.0)
+    desired_twisting_speed=0.0
     desired_body_height=0.5
     body_mass=30.0
-    body_inertia=(1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0)
+    body_inertia=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     num_legs=4
-    friction_coeff = 0.2
+    friction_coeff=0.2
     timestep=0.05
-    horizon = 10
-    BaseRollPitchYaw=(0.0,0.0,0.0)
-    AngularVelocityBodyFrame=(0.0,0.0,0.0)
-    ComVelocityBodyFrame=(0.0,0.0,0.0)
-    FootPositionsInBodyFrame = FootPositionsInBodyFrame.reshape(4,3)
-    FootContacts=(True,True,True,True)
-    slope_estimate=(0.0,0.0,0.0)
-    RotationBodyWrtWorld=(1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0)
-
-    H,g,C,c = ForceStanceLegController(desired_speed= desired_speed,
-                                        desired_twisting_speed= desired_twisting_speed,
-                                        desired_body_height=desired_body_height,
-                                        body_mass=body_mass,
-                                        body_inertia=body_inertia,
-                                        num_legs=num_legs,
-                                        friction_coeff=friction_coeff,
-                                        timestep=timestep,
-                                        horizon = horizon
-                                        ).getMatrices(BaseRollPitchYaw=BaseRollPitchYaw,
-                                                      AngularVelocityBodyFrame=AngularVelocityBodyFrame,
-                                                      ComVelocityBodyFrame=ComVelocityBodyFrame,
-                                                      FootPositionsInBodyFrame=FootPositionsInBodyFrame,
-                                                      FootContacts=FootContacts,
-                                                      slope_estimate=slope_estimate,
-                                                      RotationBodyWrtWorld=RotationBodyWrtWorld)
+    horizon=10
+    foot_x=0.2
+    foot_y=0.2
+    foot_z=-desired_body_height
     
+    # Initialize the projector with organized parameters
+    projector = QuadrupedQPProjector(
+        num_batch=num_batch,
+        maxiter=maxiter,
+        rho=rho,
+        desired_speed=desired_speed,
+        desired_twisting_speed=desired_twisting_speed,
+        desired_body_height=desired_body_height,
+        body_mass=body_mass,
+        body_inertia=body_inertia,
+        num_legs=num_legs,
+        friction_coeff=friction_coeff,
+        timestep=timestep,
+        horizon=horizon,
+        foot_x=foot_x,
+        foot_y=foot_y,
+        foot_z=foot_z
+    )
     
-    cb = -c
-    print("H", H.shape)
-    print("g", g.shape)
-    print("C", C.shape)
-    print("c", c.shape)
-    print("cb", cb.shape)
-    # H = jnp.eye(nvar)
-    # g = jnp.ones(nvar)
-    # C = jax.random.normal(key, shape=(num_constraints, nvar))
-    # c = -jnp.ones(num_constraints)
-    # cb = jnp.ones(num_constraints)
-
-    nvar = jnp.shape(H)[0]
-    num_constraints = jnp.shape(C)[0]
+    # Print problem information
+    projector.print_problem_info()
+    
+    # Sample batched initial guess
+    key = jax.random.PRNGKey(42)
     
 
-    projector = QuadrupedQPProjector(H, g, C, c, cb, num_batch = 10, maxiter=10, rho=1.0)
-
-    xi_init = jnp.zeros(nvar)
-    lam_init = jnp.zeros(num_constraints)
-
-    xi_proj, lam_out, primal_res, dual_res = projector.compute_qp(xi_init, lam_init)
+    lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
     
-
+    #print(f"Initial xi batch shape: {xi_init.shape}")
+    print(f"Initial lambda batch shape: {lamda_init.shape}")
     
-    print("Projected xi:", xi_proj.shape)
-    print("Final primal residual:", primal_res[-1])
-    print("Final dual residual:", dual_res[-1])
-    print("projected xi", -xi_proj[:12])
+    # Sample random force trajectories for projection
+    xi_samples, key = projector.sample_uniform_forces(key)
 
+    print(f"Sampled forces batch shape: {xi_samples.shape}")
+    
+    xi_init = xi_samples
+    
+    # Solve batched QP projection
+    start_time = time.time()
+    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_samples, xi_init, lamda_init)
+    solve_time = time.time() - start_time
+    
+    print(f"\n=== Solution Results ===")
+    print(f"Projection time: {solve_time:.6f} seconds")
+    print(f"Projected xi batch shape: {xi_proj.shape}")
+    print(f"Final primal residual shape: {primal_residual[-1].shape}")
+    print(f"Final dual residual shape: {fixed_point_residual[-1].shape}")
+    
+    # Display convergence statistics
+    primal_residual_np = np.array(primal_residual)
+    fixed_point_residual_np = np.array(fixed_point_residual)
+    
+    print(f"\n=== Convergence Statistics ===")
+    print(f"Primal residual - Initial (mean): {np.mean(primal_residual_np[0]):.6f}, Final (mean): {np.mean(primal_residual_np[-1]):.6f}")
+    print(f"Dual residual - Initial (mean): {np.mean(fixed_point_residual_np[0]):.6f}, Final (mean): {np.mean(fixed_point_residual_np[-1]):.6f}")
+    print(f"Primal residual - Final (max): {np.max(primal_residual_np[-1]):.6f}")
+    print(f"Dual residual - Final (max): {np.max(fixed_point_residual_np[-1]):.6f}")
+    
+    # Extract force outputs (first 12 elements as in original code) for all batches
+    force_output = -xi_proj[:, :12]
+    print(f"\n=== Force Output ===")
+    print(f"Projected forces batch shape: {force_output.shape}")
+    print(f"First batch projected forces: {force_output[0]}")
+    
+    print("\nBatched Quadruped QP projection complete!")
 
 if __name__ == "__main__":
     main()
