@@ -2,7 +2,7 @@ import numpy as np
 #from qpsolvers import solve_qp
 
 
-class QPSolver():
+class QPCostMatrices():
 
     def __init__(self, L_i, K_i, planning_horizon):
 

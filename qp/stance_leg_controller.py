@@ -13,11 +13,11 @@ from typing import Any, Sequence, Tuple
 from scipy.spatial.transform import Rotation as R
 
 from srbd import SRBD
-from qp_solver import QPSolver
+from qp_solver import QPCostMatrices
 
 
 
-class TorqueStanceLegController():
+class ForceStanceLegController():
   """A torque based stance leg controller framework.
 
   Takes in high level parameters like walking speed and turning speed, and
@@ -245,18 +245,18 @@ class TorqueStanceLegController():
     A_qp, B_qp = self._calculateQPMatrices(A_mats, B_mats)
     c, C = self._calculateFrictionCone(foot_contact_state)
 
-    qp_solver = QPSolver(self.L_i, self.K_i, self.horizon)
+    qp_costmatrices = QPCostMatrices(self.L_i, self.K_i, self.horizon)
     
-    qp_solver._createFullCostMatrices()
+    qp_costmatrices._createFullCostMatrices()
 
-    self.L = qp_solver.L
-    self.K = qp_solver.K
+    self.L = qp_costmatrices.L
+    self.K = qp_costmatrices.K
     
     H = 2*(B_qp.T@self.L@B_qp + self.K)
     g = 2*B_qp.T@self.L@(A_qp@x_init - x_ref)
 
 
-    
+
     # # U = qp_solver.solveQP(A_qp, B_qp, x_init, x_ref, (c, C))
 
     # try:
