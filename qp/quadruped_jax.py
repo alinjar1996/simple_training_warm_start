@@ -85,7 +85,7 @@ def main():
     slope_estimate=(0.0,0.0,0.0)
     RotationBodyWrtWorld=(1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0)
 
-    H,g,C,c = TorqueStanceLegController(desired_speed= desired_speed,
+    H,g,C,c = ForceStanceLegController(desired_speed= desired_speed,
                                         desired_twisting_speed= desired_twisting_speed,
                                         desired_body_height=desired_body_height,
                                         body_mass=body_mass,
