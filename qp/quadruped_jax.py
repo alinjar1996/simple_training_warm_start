@@ -102,9 +102,9 @@ class QuadrupedQPProjector:
         # Store matrices
         self.H = H                       # QP Hessian (3nk x 3nk)
         self.g = g                       # Linear term (3nk)
-        self.C = C                       # Constraint matrix (num_constraints x 3nk)
-        self.c_lower = c                       # Lower bound (num_constraints)
-        self.c_upper = -c                     # Upper bound (num_constraints)
+        self.C = C                       # Constraint matrix (num_total_constraints x 3nk)
+        self.c_lower = c                       # Lower bound (num_total_constraints)
+        self.c_upper = -c                     # Upper bound (num_total_constraints)
         
         # Dimensions
         self.nvar = H.shape[0]         # 3nk
@@ -112,15 +112,13 @@ class QuadrupedQPProjector:
         print("self.H.shape", self.H.shape)
         print("self.nvar", self.nvar)
         
-        # Precompute ADMM matrix
-        self.H_rho = H + self.rho * C.T @ C
 
         self.A_projection = jnp.identity(self.nvar)
 
         self.A_control = jnp.vstack((self.C,-self.C)) 
 
-        self.num_constraints = self.A_control.shape[0] #Since stacking them later
-        print("self.num_constraints", self.num_constraints)
+        self.num_total_constraints = self.A_control.shape[0] #Since stacking them later
+        print("self.num_total_constraints", self.num_total_constraints)
 
 
     
@@ -143,7 +141,7 @@ class QuadrupedQPProjector:
 
         # Initialize slack variables ()
         s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_constraints)),
+            jnp.zeros((self.num_batch, self.num_total_constraints)),
             -jnp.dot(self.A_control, xi_projected.T).T + b_control
         )
 
@@ -185,7 +183,7 @@ class QuadrupedQPProjector:
         
         # Update slack variables (following )
         s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_constraints)),
+            jnp.zeros((self.num_batch, self.num_total_constraints)),
             -jnp.dot(self.A_control, xi_projected.T).T + b_control
         )
 
@@ -268,7 +266,7 @@ class QuadrupedQPProjector:
         print(f"lower limit vector shape: {self.c_lower.shape}")
         print(f"upper limit vector shape: {self.c_upper.shape}")
         print(f"Number of variables: {self.nvar}")
-        print(f"Number of constraints: {self.num_constraints}")
+        print(f"Number of constraints: {self.num_total_constraints}")
         print(f"Batch size: {self.num_batch}")
         print(f"Max iterations: {self.maxiter}")
         print(f"ADMM penalty (rho): {self.rho}")
