@@ -136,41 +136,7 @@ class TrajectoryProjector:
         v_goal_batch = jnp.tile(self.v_goal, (self.num_batch, 1))
         b_eq = jnp.hstack([v_start_batch, v_goal_batch])
         return b_eq
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_s_init(self, xi_projected):
-        """Initialize slack variables following  approach"""
-        # Create bounds vector
-        b_vel = jnp.hstack((
-            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2)),
-            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2))
-        ))
-        
-        b_acc = jnp.hstack((
-            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2)),
-            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2))
-        ))
-        
-        b_jerk = jnp.hstack((
-            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2)),
-            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2))
-        ))
-        
-        b_pos = jnp.hstack((
-            (self.p_max - self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
-            (self.p_max + self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
-        ))
 
-        b_control = jnp.hstack((b_vel, b_acc, b_jerk, b_pos))
-
-        # Initialize slack variables ()
-        s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_total_constraints)),
-            -jnp.dot(self.A_control, xi_projected.T).T + b_control
-        )
-
-        return s
-    
     @partial(jax.jit, static_argnums=(0,))
     def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
         """
@@ -387,8 +353,14 @@ def main():
     xi_filtered_init = output[:, :projector.nvar]
     lamda_init = output[:, projector.nvar: 2*projector.nvar]
     s_init = output[:, 2*projector.nvar:2*projector.nvar + projector.num_total_constraints]
+    
 
-
+    if jnp.any(s_init < 0):
+        print("Some values in s_init are less than 0.")
+        s_init = jnp.maximum(jnp.zeros((projector.num_batch, projector.num_total_constraints)), s_init)
+        
+    
+    
     # xi_filtered_init = xi_samples
     # lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
 
@@ -413,13 +385,24 @@ def main():
     print(f"Prime residuals shape: {prime_residuals_np.shape}")
     print(f"Fixed point residuals shape: {fixed_residuals_np.shape}")
 
+    #Save
+    os.makedirs('results_FD', exist_ok=True)
+
+    #Start
+    print("Start")
+    print(f"Max Prime residuals start: {max(prime_residuals_np[0])}")
+    print(f"Max fixed residuals start: {max(fixed_residuals_np[0])}")
+    print(f"Min Prime residuals start: {min(prime_residuals_np[0])}")
+    print(f"Min fixed residuals start: {min(fixed_residuals_np[0])}")
+    
+    #End
+    print("End")
     print(f"Max Prime residuals end: {max(prime_residuals_np[-1])}")
     print(f"Max fixed residuals end: {max(fixed_residuals_np[-1])}")
     print(f"Min Prime residuals end: {min(prime_residuals_np[-1])}")
     print(f"Min fixed residuals end: {min(fixed_residuals_np[-1])}")
     
-    # Save results
-    os.makedirs('results_FD', exist_ok=True)
+    
     np.savetxt('results_FD/original_trajectory.csv', xi_np, delimiter=',')  # Save first sample
     np.savetxt('results_FD/projected_trajectory.csv', xi_filtered_np, delimiter=',')
     np.savetxt('results_FD/prime_residuals.csv', prime_residuals_np, delimiter=',')
