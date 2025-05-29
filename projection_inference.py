@@ -20,6 +20,7 @@ from torch.utils.data import Dataset, DataLoader
 from mlp_singledof import MLP, MLPProjectionFilter
 import jax.dlpack
 import torch.utils.dlpack as torch_dlpack
+#jax.config.update("jax_enable_x64", True)
 
 class TrajectoryProjector:
     def __init__(self, 
@@ -246,7 +247,7 @@ class TrajectoryProjector:
         return xi_projected, s, res_norm, lamda
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_projection(self, xi_samples, xi_filtered, lamda_init):
+    def compute_projection(self, xi_samples, xi_filtered, lamda_init, s_init):
         """Project sampled trajectories following  approach"""
         
         #Here input xi_filtered is the initial guess for the projection
@@ -254,8 +255,6 @@ class TrajectoryProjector:
         xi_projected_init = xi_filtered
 
         
-        # Initialize slack variables
-        s_init = self.compute_s_init(xi_projected_init)
         
         # Define scan function (following  structure)
         def lax_custom_projection(carry, idx):
@@ -272,8 +271,7 @@ class TrajectoryProjector:
             
             # Compute residuals
             primal_residual = res_norm
-            fixed_point_residual = (jnp.linalg.norm(xi_projected_prev - xi_projected, axis=1) + 
-                                  jnp.linalg.norm(lamda_prev - lamda, axis=1) +
+            fixed_point_residual = (jnp.linalg.norm(lamda_prev - lamda, axis=1) +
                                   jnp.linalg.norm(s_prev - s, axis=1))
             
             return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
@@ -316,6 +314,10 @@ def main():
     j_max=5.0
     p_max=180.0*np.pi/180.0 
     theta_init=0.0
+    maxiter_projection=20
+    rho_ineq=1.0
+    rho_projection=1.0
+
  
     # Initialize the projector
     projector = TrajectoryProjector(
@@ -323,13 +325,13 @@ def main():
         num_steps=num_steps,
         num_batch=num_batch,
         timestep=timestep,
-        maxiter_projection=20,  # More iterations to see convergence
+        maxiter_projection=maxiter_projection,  # More iterations to see convergence
         v_max=v_max,
         a_max=a_max,
         j_max=j_max,
         p_max=p_max,
-        rho_ineq=1.0,
-        rho_projection=1.0,
+        rho_ineq=rho_ineq,
+        rho_projection=rho_projection,
     )
     
     # Sample trajectories
@@ -345,7 +347,7 @@ def main():
     enc_inp_dim = np.shape(inp)[1] 
     mlp_inp_dim = enc_inp_dim
     hidden_dim = 1024
-    mlp_out_dim = 2*projector.nvar #( xi_samples- 0:nvar, lamda_smples- nvar:2*nvar)
+    mlp_out_dim = 2*projector.nvar + projector.num_total_constraints
     print(f"MLP input dimension: {mlp_inp_dim}")
     print(f"MLP output dimension: {mlp_out_dim}")
 
@@ -384,6 +386,7 @@ def main():
     
     xi_filtered_init = output[:, :projector.nvar]
     lamda_init = output[:, projector.nvar: 2*projector.nvar]
+    s_init = output[:, 2*projector.nvar:2*projector.nvar + projector.num_total_constraints]
 
 
     # xi_filtered_init = xi_samples
@@ -393,7 +396,7 @@ def main():
     # Project the trajectories
     start_time = time.time()
     xi_filtered, prime_residuals, fixed_point_residuals = projector.compute_projection(
-        xi_samples, xi_filtered_init, lamda_init)
+        xi_samples, xi_filtered_init, lamda_init, s_init)
     print(f"Projection time: {time.time() - start_time:.3f} seconds")
     
     # Convert to numpy for analysis
