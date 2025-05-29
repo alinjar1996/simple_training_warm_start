@@ -16,7 +16,7 @@ import scipy.io as sio
 from tqdm import trange, tqdm
 
 # Import the single DOF finite difference model MLP model
-from mlp_singledof import MLP, MLPProjectionFilter
+from mlp_singledof_gru import MLP, MLPProjectionFilter, CustomGRULayer, GRU_Hidden_State
 
 
 class TrajDataset(Dataset):
@@ -79,6 +79,9 @@ num_pos_constraints = 2 * num_pos * num_dof
 num_total_constraints = (num_vel_constraints + num_acc_constraints + 
                             num_jerk_constraints + num_pos_constraints)
 
+#Maximum Iterations
+maxiter_projection = 20
+
 
 # Cell 3
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -104,7 +107,29 @@ train_dataset = TrajDataset(inp)
 val_dataset = TrajDataset(inp_val)
 
 train_loader = DataLoader(train_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
-val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)  
+val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
+
+
+
+#GRU handling
+
+gru_input_size = 3*num_total_constraints+3*nvar
+# print(gru_input_size)
+gru_hidden_size = 512
+# gru_output_size = (2*nvar)**2+2*nvar
+gru_output_size = num_total_constraints+nvar
+# gru_context_size = mlp_planner_inp_dim
+
+gru_context = CustomGRULayer(gru_input_size, gru_hidden_size, gru_output_size)
+
+
+input_hidden_state_init = np.shape(inp)[1]
+mid_hidden_state_init = 512
+out_hidden_state_init = gru_hidden_size
+
+gru_init  =  GRU_Hidden_State(input_hidden_state_init, mid_hidden_state_init, out_hidden_state_init)
+
+##
 
 enc_inp_dim = np.shape(inp)[1] 
 mlp_inp_dim = enc_inp_dim
@@ -115,9 +140,9 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
 
 
-model = MLPProjectionFilter(mlp=mlp,num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
+model = MLPProjectionFilter(mlp=mlp,gru_context=gru_context, gru_init=gru_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
 							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							theta_init=theta_init).to(device)
+							theta_init=theta_init, maxiter_projection=maxiter_projection).to(device)
 
 print(type(model))
 
@@ -125,7 +150,7 @@ print(type(model))
 
 epochs = 500
 #step, beta = 0, 1.0 # 3.5
-optimizer = optim.AdamW(model.parameters(), lr = 1e-5, weight_decay=6e-5)
+optimizer = optim.AdamW(model.parameters(), lr = 1e-3, weight_decay=6e-5)
 #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1, verbose=True)
 
 losses = []
@@ -209,7 +234,7 @@ for epoch in range(epochs):
     os.makedirs("./training_weights", exist_ok=True)
     #if mean_val_loss <= last_loss:
     if loss <= last_loss:
-            torch.save(model.state_dict(), f"./training_weights/mlp_learned_single_dof.pth")
+            torch.save(model.state_dict(), f"./training_weights/mlp_learned_single_dof_gru.pth")
             last_loss = loss
 
     avg_train_loss.append(np.average(losses_train)), avg_primal_loss.append(np.average(primal_losses)), \
