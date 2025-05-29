@@ -8,23 +8,24 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import jax.lax as lax
+jax.config.update("jax_enable_x64", True)
 
 
 
 class TrajectoryProjector:
     def __init__(self, 
-                 num_dof=1,            # Number of degrees of freedom (joints)
-                 num_steps=50,         # Number of time steps in trajectory
-                 num_batch=500,        # Batch size for parallel processing
-                 timestep=0.05,        # Time step size in seconds
-                 maxiter_projection=20,# Maximum iterations for projection
-                 rho_projection=1.0,   # ADMM penalty parameter
-                 rho_ineq=1.0,         # Penalty for inequality constraints
-                 v_max=1.0,            # Maximum joint velocity
-                 a_max=2.0,            # Maximum joint acceleration
-                 j_max=5.0,              # Maximum joint jerk
-                 p_max=180.0*np.pi/180.0, # Maximum joint displacement from theta_init    
-                 theta_init = 0.0):        
+                 num_dof= None,            # Number of degrees of freedom (joints)
+                 num_steps=None,         # Number of time steps in trajectory
+                 num_batch=None,        # Batch size for parallel processing
+                 timestep=None,        # Time step size in seconds
+                 maxiter_projection=None,# Maximum iterations for projection
+                 rho_projection=None,   # ADMM penalty parameter
+                 rho_ineq=None,         # Penalty for inequality constraints
+                 v_max=None,            # Maximum joint velocity
+                 a_max=None,            # Maximum joint acceleration
+                 j_max=None,              # Maximum joint jerk
+                 p_max=None, # Maximum joint displacement from theta_init    
+                 theta_init = None):        
         
         self.num_dof = num_dof
         self.num_steps = num_steps
@@ -43,7 +44,7 @@ class TrajectoryProjector:
         
         # Boundaries
         self.theta_init = theta_init
-        self.v_start = jnp.zeros(num_dof)
+        self.v_start = jnp.ones(num_dof)*0.6
         self.v_goal = jnp.zeros(num_dof)
         
         # Setup finite difference matrices ach
@@ -103,9 +104,17 @@ class TrajectoryProjector:
         # Constrain first and last velocity for each DOF
         self.A_eq = jnp.kron(
             jnp.eye(self.num_dof),
-            jnp.array([[1.0] + [0.0] * (self.num_steps - 1),    # first timestep
-                      [0.0] * (self.num_steps - 1) + [1.0]])   # last timestep
+            jnp.array([
+                [1.0] + [0.0] * (self.num_steps - 1),          # first timestep
+                [0.0] * (self.num_steps - 1) + [1.0]           # last timestep
+            ])
         )
+
+        #self.A_eq = self.P_vel[0].reshape(1, self.nvar)
+
+        
+
+        
         
         # Projection matrix
         self.A_projection = jnp.identity(self.nvar)
@@ -124,6 +133,8 @@ class TrajectoryProjector:
         v_start_batch = jnp.tile(self.v_start, (self.num_batch, 1))
         v_goal_batch = jnp.tile(self.v_goal, (self.num_batch, 1))
         b_eq = jnp.hstack([v_start_batch, v_goal_batch])
+        
+        # b_eq = v_start_batch
         return b_eq
     
     @partial(jax.jit, static_argnums=(0,))
@@ -299,12 +310,12 @@ def main():
     projector = TrajectoryProjector(
         num_dof=1,              # Multi-DOF example
         num_steps=100,
-        num_batch=200,
+        num_batch=400,
         timestep=0.05,
-        maxiter_projection=20,  # More iterations to see convergence
+        maxiter_projection=1000,  # More iterations to see convergence
         v_max=1.0,
-        a_max=2.0,
-        j_max=3.0,
+        a_max=1.0,
+        j_max=1.0,
         p_max=180.0*np.pi/180.0,
         rho_ineq=1.0,
         rho_projection=1.0,
