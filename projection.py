@@ -138,40 +138,6 @@ class TrajectoryProjector:
         return b_eq
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_s_init(self, xi_projected):
-        """Initialize slack variables following  approach"""
-        # Create bounds vector
-        b_vel = jnp.hstack((
-            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2)),
-            self.v_max * jnp.ones((self.num_batch, self.num_vel_constraints // 2))
-        ))
-        
-        b_acc = jnp.hstack((
-            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2)),
-            self.a_max * jnp.ones((self.num_batch, self.num_acc_constraints // 2))
-        ))
-        
-        b_jerk = jnp.hstack((
-            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2)),
-            self.j_max * jnp.ones((self.num_batch, self.num_jerk_constraints // 2))
-        ))
-        
-        b_pos = jnp.hstack((
-            (self.p_max - self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2)),
-            (self.p_max + self.theta_init) * jnp.ones((self.num_batch, self.num_pos_constraints // 2))
-        ))
-
-        b_control = jnp.hstack((b_vel, b_acc, b_jerk, b_pos))
-
-        # Initialize slack variables ()
-        s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_total_constraints)),
-            -jnp.dot(self.A_control, xi_projected.T).T + b_control
-        )
-
-        return s
-    
-    @partial(jax.jit, static_argnums=(0,))
     def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
         """
         Compute feasible control following  approach exactly
@@ -254,9 +220,6 @@ class TrajectoryProjector:
         # Initialize variables
         xi_projected_init = xi_samples
 
-        
-        # Initialize slack variables
-        #s_init = self.compute_s_init(xi_projected_init)
         
         # Define scan function (following  structure)
         def lax_custom_projection(carry, idx):

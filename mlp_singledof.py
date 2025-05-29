@@ -173,39 +173,6 @@ class MLPProjectionFilter(nn.Module):
         b_eq = torch.hstack([v_start_batch, v_goal_batch])
         return b_eq
 
-    def compute_s_init(self, xi_projected):
-        """Initialize slack variables following JAX approach"""
-        # Create bounds vector
-        b_vel = torch.hstack((
-            self.v_max * torch.ones((self.num_batch, self.num_vel_constraints // 2), device=device),
-            self.v_max * torch.ones((self.num_batch, self.num_vel_constraints // 2), device=device)
-        ))
-        
-        b_acc = torch.hstack((
-            self.a_max * torch.ones((self.num_batch, self.num_acc_constraints // 2), device=device),
-            self.a_max * torch.ones((self.num_batch, self.num_acc_constraints // 2), device=device)
-        ))
-        
-        b_jerk = torch.hstack((
-            self.j_max * torch.ones((self.num_batch, self.num_jerk_constraints // 2), device=device),
-            self.j_max * torch.ones((self.num_batch, self.num_jerk_constraints // 2), device=device)
-        ))
-        
-        b_pos = torch.hstack((
-            (self.p_max - self.theta_init) * torch.ones((self.num_batch, self.num_pos_constraints // 2), device=device),
-            (self.p_max + self.theta_init) * torch.ones((self.num_batch, self.num_pos_constraints // 2), device=device)
-        ))
-
-        b_control = torch.hstack((b_vel, b_acc, b_jerk, b_pos))
-
-        # Initialize slack variables
-        s = torch.maximum(
-            torch.zeros((self.num_batch, self.num_total_constraints), device=device),
-            -torch.matmul(self.A_control, xi_projected.T).T + b_control
-        )
-
-        return s
-
     def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
         """Compute feasible control following JAX approach exactly"""
         b_vel = torch.hstack((
@@ -275,7 +242,7 @@ class MLPProjectionFilter(nn.Module):
         #lamda_init = torch.zeros((self.num_batch, self.nvar), device=device)
         
         # Initialize slack variables
-        s_init = s_init_nn_output #self.compute_s_init(xi_projected_init)
+        s_init = s_init_nn_output 
         
         # Initialize tracking variables
         xi_projected = xi_projected_init
