@@ -121,15 +121,16 @@ class QuadrupedQPProjector:
         self.num_total_constraints = self.A_control.shape[0] #Since stacking them later
         print("self.num_total_constraints", self.num_total_constraints)
 
+        self.A_eq_single_row = jnp.array([0.0, 0.0, 1.0])
         
-        self.A_eq_single_horizon = jnp.tile(jnp.eye(3),self.num_legs)
+        self.A_eq_single_horizon = jnp.tile(self.A_eq_single_row,self.num_legs)
 
         self.A_eq = jnp.kron(jnp.eye(self.horizon), self.A_eq_single_horizon)
 
 
         print("self.A_eq.shape", self.A_eq.shape)
 
-        self.b_eq_single_horizon = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81]), (self.num_batch, 1))
+        self.b_eq_single_horizon = jnp.tile(jnp.array(self.body_mass*9.81), (self.num_batch, 1))
 
         self.b_eq = jnp.tile(self.b_eq_single_horizon,(1,self.horizon))
 
