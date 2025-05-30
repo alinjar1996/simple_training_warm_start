@@ -122,13 +122,20 @@ class QuadrupedQPProjector:
         print("self.num_total_constraints", self.num_total_constraints)
 
         
-        self.A_eq = jnp.tile(jnp.eye(3),self.num_legs * self.horizon)
+        self.A_eq_single_horizon = jnp.tile(jnp.eye(3),self.num_legs)
 
-        #print("self.A_eq.shape", self.A_eq.shape)
+        self.A_eq = jnp.kron(jnp.eye(self.horizon), self.A_eq_single_horizon)
 
-        self.b_eq = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81*self.horizon]), (self.num_batch, 1))
 
-        #print("self.b_eq.shape", self.b_eq.shape)
+        print("self.A_eq.shape", self.A_eq.shape)
+
+        self.b_eq_single_horizon = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81]), (self.num_batch, 1))
+
+        self.b_eq = jnp.tile(self.b_eq_single_horizon,(1,self.horizon))
+
+        # self.b_eq = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81*self.horizon]), (self.num_batch, 1))
+
+        print("self.b_eq.shape", self.b_eq.shape)
 
 
 
@@ -281,7 +288,7 @@ def main():
     num_legs=4
     friction_coeff=0.2
     timestep=0.05
-    horizon=1
+    horizon=2
     foot_x=0.2
     foot_y=0.2
     foot_z=-desired_body_height

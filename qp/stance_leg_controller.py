@@ -63,7 +63,7 @@ class ForceStanceLegController():
     self.num_legs = num_legs
 
     self.friction_coeffs = np.array([friction_coeff]*num_legs)
-    self.max_z_force = body_mass*9.81
+    self.max_z_force = body_mass*9.81/2.0
     self.horizon = horizon
 
     mpc_force_weight_scale= 5e-6
