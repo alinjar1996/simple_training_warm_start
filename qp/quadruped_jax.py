@@ -6,6 +6,8 @@ import time
 
 from stance_leg_controller import ForceStanceLegController
 
+#jax.config.update("jax_enable_x64", True)
+
 class QuadrupedQPProjector:
     def __init__(self, 
                  num_batch=10,           # Batch size for parallel processing
@@ -99,26 +101,35 @@ class QuadrupedQPProjector:
             RotationBodyWrtWorld=self.RotationBodyWrtWorld
         )
         
+        
         # Store matrices
         self.H = H                       # QP Hessian (3nk x 3nk)
         self.g = g                       # Linear term (3nk)
         self.C = C                       # Constraint matrix (num_total_constraints x 3nk)
-        self.c_lower = c                       # Lower bound (num_total_constraints)
-        self.c_upper = -c                     # Upper bound (num_total_constraints)
-        
+                              # Lower bound (num_total_constraints)
+        self.c = c                     # Upper bound (num_total_constraints)
+
+
         # Dimensions
         self.nvar = H.shape[0]         # 3nk
         
-        print("self.H.shape", self.H.shape)
-        print("self.nvar", self.nvar)
+
+        #self.A_control = jnp.vstack((self.C,-self.C)) 
         
-
-        self.A_projection = jnp.identity(self.nvar)
-
-        self.A_control = jnp.vstack((self.C,-self.C)) 
+        self.A_control =self.C 
 
         self.num_total_constraints = self.A_control.shape[0] #Since stacking them later
         print("self.num_total_constraints", self.num_total_constraints)
+
+        
+        self.A_eq = jnp.tile(jnp.eye(3),self.num_legs * self.horizon)
+
+        #print("self.A_eq.shape", self.A_eq.shape)
+
+        self.b_eq = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81*self.horizon]), (self.num_batch, 1))
+
+        #print("self.b_eq.shape", self.b_eq.shape)
+
 
 
     
@@ -129,11 +140,7 @@ class QuadrupedQPProjector:
 
         
 
-        b_upper = jnp.tile(self.c_upper.reshape(1, -1), (self.num_batch, 1))
-        b_lower = jnp.tile(self.c_lower.reshape(1, -1), (self.num_batch, 1))
-        
-
-        b_control = jnp.hstack((b_upper, b_lower))
+        b_control = self.c
 
         # jax.debug.print("xi_projected: {0}", jnp.shape(xi_projected))
         # jax.debug.print("b_control: {0}", jnp.shape(b_control))
@@ -148,35 +155,39 @@ class QuadrupedQPProjector:
         return s
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
+    def compute_feasible_control(self, s, xi_projected, lamda): 
         """
         Compute feasible control following  approach exactly
         """
         
-
-        b_upper = jnp.tile(self.c_upper.reshape(1, -1), (self.num_batch, 1))
-        b_lower = jnp.tile(self.c_lower.reshape(1, -1), (self.num_batch, 1))
         
+        b_eq = self.b_eq
 
-        b_control = jnp.hstack((b_upper, b_lower))
-        
+        b_control = self.c
+
         # Augmented bounds with slack variables
         b_control_aug = b_control - s
         
         # Cost matrix 
-        cost = (jnp.dot(self.A_projection.T, self.A_projection) + 
-                self.rho * jnp.dot(self.A_control.T, self.A_control))
+        cost = (self.H + self.rho * jnp.dot(self.A_control.T, self.A_control))
         
         # KKT system matrix ()
-        cost_mat = cost
+        #cost_mat = cost + 0.001*jnp.eye(self.nvar)
+                
+        cost_mat = jnp.vstack((
+            jnp.hstack((cost, self.A_eq.T)),
+            jnp.hstack((self.A_eq, jnp.zeros((jnp.shape(self.A_eq)[0], jnp.shape(self.A_eq)[0]))))
+        ))
         
         # Linear cost term (following )
-        lincost = (-lamda - 
-                  jnp.dot(self.A_projection.T, xi_samples.T).T - 
+        lincost = (-lamda 
+                    + self.g - 
                   self.rho * jnp.dot(self.A_control.T, b_control_aug.T).T)
         
         # Solve KKT system ()
-        sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
+        sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
+        
+        #sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
         
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
@@ -186,9 +197,6 @@ class QuadrupedQPProjector:
             jnp.zeros((self.num_batch, self.num_total_constraints)),
             -jnp.dot(self.A_control, xi_projected.T).T + b_control
         )
-
-
-
 
         #print("s", (jnp.dot(self.A_control, xi_projected.T).T + b_control).shape)
         
@@ -207,7 +215,7 @@ class QuadrupedQPProjector:
         return xi_projected, s, res_norm, lamda
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_qp_projection(self, xi_samples, xi_init, lamda_init):
+    def compute_qp_projection(self, xi_init, lamda_init):
         """Run batched ADMM iterations to project xi_init onto constraints"""
 
         xi_projected_init = xi_init
@@ -223,7 +231,7 @@ class QuadrupedQPProjector:
             lamda_prev = lamda
             s_prev = s
 
-            xi_projected, s, res_norm, lamda = self.compute_feasible_control(xi_samples, s, xi_projected, lamda)
+            xi_projected, s, res_norm, lamda = self.compute_feasible_control(s, xi_projected, lamda)
             # xi_new, lamda_new, primal_residual, fixed_point_residual = self.compute_feasible_control(xi, s_init, xi_projected, lamda)
             primal_residual = res_norm
             fixed_point_residual = (jnp.linalg.norm(xi_projected - xi_prev, axis=1) + 
@@ -244,18 +252,6 @@ class QuadrupedQPProjector:
         #xi_final, lamda_final = carry_final
         return xi_projected, primal_residual, fixed_point_residual
 
-    
-    @partial(jax.jit, static_argnums=(0,))
-    def sample_uniform_forces(self, key, F_min=-10.0, F_max=10.0):
-        """Sample batched force trajectories uniformly between F_min and F_max"""
-        key, subkey = jax.random.split(key)
-        xi_samples = jax.random.uniform(
-            key, 
-            shape=(self.num_batch, self.nvar), 
-            minval=F_min, 
-            maxval=F_max
-        )
-        return xi_samples, key
 
     def print_problem_info(self):
         """Print information about the QP problem dimensions"""
@@ -263,8 +259,7 @@ class QuadrupedQPProjector:
         print(f"H matrix shape: {self.H.shape}")
         print(f"g vector shape: {self.g.shape}")
         print(f"C matrix shape: {self.C.shape}")
-        print(f"lower limit vector shape: {self.c_lower.shape}")
-        print(f"upper limit vector shape: {self.c_upper.shape}")
+        print(f"constraint limit vector shape: {self.c.shape}")
         print(f"Number of variables: {self.nvar}")
         print(f"Number of constraints: {self.num_total_constraints}")
         print(f"Batch size: {self.num_batch}")
@@ -275,8 +270,8 @@ class QuadrupedQPProjector:
 def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
-    num_batch=100  # Increased batch size to demonstrate batching
-    maxiter=2000
+    num_batch=1  # Increased batch size to demonstrate batching
+    maxiter=200
     rho=1.0
     desired_speed=(0.0, 0.0)
     desired_twisting_speed=0.0
@@ -286,7 +281,7 @@ def main():
     num_legs=4
     friction_coeff=0.2
     timestep=0.05
-    horizon=10
+    horizon=1
     foot_x=0.2
     foot_y=0.2
     foot_z=-desired_body_height
@@ -314,7 +309,7 @@ def main():
     projector.print_problem_info()
     
     # Sample batched initial guess
-    key = jax.random.PRNGKey(42)
+    #key = jax.random.PRNGKey(42)
     
 
     lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
@@ -323,22 +318,31 @@ def main():
     print(f"Initial lambda batch shape: {lamda_init.shape}")
     
     # Sample random force trajectories for projection
-    xi_samples, key = projector.sample_uniform_forces(key)
+    #xi_samples, key = projector.sample_uniform_forces(key)
 
-    print(f"Sampled forces batch shape: {xi_samples.shape}")
+    xi_init = jnp.zeros((projector.num_batch, projector.nvar))
+    # for i in range(projector.num_legs*projector.horizon):
+    #     xi_init = xi_init.at[:, 3*i+2].set(body_mass * 9.81 / 4.0)
     
-    xi_init = xi_samples
-    
+    force_input = -xi_init[:, :12]
+    print(f"Initial Force Input shape: {force_input.shape}")
+    print(f"Initial Force Input: {force_input[0]}")
+
+
     # Solve batched QP projection
     start_time = time.time()
-    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_samples, xi_init, lamda_init)
+    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_init, lamda_init)
     solve_time = time.time() - start_time
     
     print(f"\n=== Solution Results ===")
+
+    ##
+    print(f"Primal Residual Shape: {primal_residual.shape}")
+    print(f"Primal Residual: {primal_residual[-1]}")
     print(f"Projection time: {solve_time:.6f} seconds")
     print(f"Projected xi batch shape: {xi_proj.shape}")
     print(f"Final primal residual shape: {primal_residual[-1].shape}")
-    print(f"Final dual residual shape: {fixed_point_residual[-1].shape}")
+    print(f"Final Fixed_Point Residual shape: {fixed_point_residual[-1].shape}")
     
     # Display convergence statistics
     primal_residual_np = np.array(primal_residual)
@@ -346,15 +350,30 @@ def main():
     
     print(f"\n=== Convergence Statistics ===")
     print(f"Primal residual - Initial (mean): {np.mean(primal_residual_np[0]):.6f}, Final (mean): {np.mean(primal_residual_np[-1]):.6f}")
-    print(f"Dual residual - Initial (mean): {np.mean(fixed_point_residual_np[0]):.6f}, Final (mean): {np.mean(fixed_point_residual_np[-1]):.6f}")
+    print(f"Fixed_Point Residual - Initial (mean): {np.mean(fixed_point_residual_np[0]):.6f}, Final (mean): {np.mean(fixed_point_residual_np[-1]):.6f}")
     print(f"Primal residual - Final (max): {np.max(primal_residual_np[-1]):.6f}")
-    print(f"Dual residual - Final (max): {np.max(fixed_point_residual_np[-1]):.6f}")
+    print(f"Fixed_Point Residual - Final (max): {np.max(fixed_point_residual_np[-1]):.6f}")
     
     # Extract force outputs (first 12 elements as in original code) for all batches
     force_output = -xi_proj[:, :12]
     print(f"\n=== Force Output ===")
     print(f"Projected forces batch shape: {force_output.shape}")
-    print(f"First batch projected forces: {force_output[0]}")
+    print(f"First horizon projected forces: {force_output[0]}")
+    force_output = -xi_proj[:, 12:24]
+    print(f"\n=== Force Output ===")
+    print(f"Projected forces batch shape: {force_output.shape}")
+    print(f"Second horizon projected forces: {force_output[0]}")
+    
+
+    # Checking Equality Constraints
+    
+    print("Checking Equality Constraints:")
+    # print("projector.A_eq.shape", projector.A_eq.shape)
+    # print(f"xi_proj.shape", xi_proj.shape)
+    # print(f"projector.b_eq.shape", projector.b_eq.shape)
+    eq_res = jnp.matmul(projector.A_eq, xi_proj.T) - projector.b_eq.T
+    print("eq_res max:", max(eq_res))
+    print("eq_res min:", min(eq_res))
     
     print("\nBatched Quadruped QP projection complete!")
 

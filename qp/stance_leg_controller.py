@@ -130,9 +130,6 @@ class ForceStanceLegController():
             C[i*12 + j*6 + 4, i*6 + j*3:i*6 + j*3 + 3] = [0, 1, -1*self.friction_coeffs[j]]
             C[i*12 + j*6 + 5, i*6 + j*3:i*6 + j*3 + 3] = [0, -1, -1*self.friction_coeffs[j]]
 
-    self.lower_force_limit = c
-    self.upper_force_limit = C
-
     return c, C
 
   def _calculateQPMatrices(self, A_mats, B_mats, change_A_with_time=True, change_B_with_time=True):
