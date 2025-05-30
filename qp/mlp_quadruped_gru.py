@@ -111,7 +111,7 @@ class MLP(nn.Module):
 class MLPQuadrupedProjectionFilter(nn.Module):
     
     def __init__(self, mlp, gru_context, gru_init, num_batch, 
-                 H, g, C, c_lower, c_upper, maxiter_projection,
+                 H, g, C, c, maxiter_projection,
                  desired_speed, desired_twisting_speed,
                  desired_body_height, body_mass,
                  body_inertia,
@@ -144,8 +144,8 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         self.H = torch.tensor(H, dtype=torch.float32, device=device)
         self.g = torch.tensor(g, dtype=torch.float32, device=device)
         self.C = torch.tensor(C, dtype=torch.float32, device=device)
-        self.c_lower = torch.tensor(c_lower, dtype=torch.float32, device=device)
-        self.c_upper = torch.tensor(c_upper, dtype=torch.float32, device=device)
+        self.c = torch.tensor(c, dtype=torch.float32, device=device)
+ 
         
         # Problem dimensions
         self.nvar = self.H.shape[0]
@@ -164,14 +164,10 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         """Setup matrices following JAX approach"""
         
         # Combined control matrix (stack C and -C)
-        self.A_control = torch.vstack((self.C, -self.C))
+        self.A_control = self.C #torch.vstack((self.C, -self.C))
         
         # Number of constraints
         self.num_constraints = self.A_control.shape[0]
-        
-        # Compute cost matrix for KKT system
-        self.cost_matrix = (self.A_projection.T @ self.A_projection + 
-                           self.rho_ineq * self.A_control.T @ self.A_control)
         
         print(f"Problem dimensions:")
         print(f"H matrix shape: {self.H.shape}")
@@ -180,26 +176,72 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         print(f"Number of variables: {self.nvar}")
         print(f"Number of constraints: {self.num_constraints}")
 
-    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda):
+        # A_eq_single_horizon: block-diagonal of identity matrices
+        self.A_eq_single_horizon = torch.tile(torch.eye(3),(1,self.num_legs)).to(device) # shape: (3 * num_legs, 3)
+        
+        self.I_horizon = torch.eye(self.horizon).to(device)
+
+        # A_eq: kron product with identity across horizon
+        self.A_eq = torch.kron(self.I_horizon, self.A_eq_single_horizon).to(device) # shape: (3 * num_legs * horizon, 3 * horizon)
+
+
+        print("self.A_eq.shape", self.A_eq.shape)
+
+        # b_eq_single_horizon: gravity force applied per batch
+        self.b_eq_single_horizon = torch.tile(
+            torch.tensor([[0.0, 0.0, self.body_mass * 9.81]]), (self.num_batch, 1)
+        )  # shape: (num_batch, 3)
+
+        self.b_eq_single_horizon = self.b_eq_single_horizon.to(device)
+
+        # b_eq: repeat across horizon
+        self.b_eq = self.b_eq_single_horizon.repeat(1, self.horizon)  # shape: (num_batch, 3 * horizon)
+
+        self.b_eq = self.b_eq.to(device)
+
+        print("self.b_eq.shape", self.b_eq.shape)
+
+                
+        self.cost = (self.H + self.rho_ineq * torch.matmul(self.A_control.T, self.A_control))
+
+        self.cost = self.cost.to(device)
+
+        print("self.cost.shape", self.cost.shape)
+        
+        self.cost_matrix =torch.vstack((
+            torch.hstack((self.cost, self.A_eq.T)),
+            torch.hstack((self.A_eq, torch.zeros((self.A_eq.shape[0], self.A_eq.shape[0])).to(device))),
+        ))
+
+        self.cost_matrix = self.cost_matrix.to(device)
+
+
+
+    def compute_feasible_control(self, s, xi_projected, lamda):
         """Compute feasible control following JAX approach exactly"""
         
-        b_upper = self.c_upper.unsqueeze(0).repeat(self.num_batch, 1)
-        b_lower = self.c_lower.unsqueeze(0).repeat(self.num_batch, 1)
-        
-        b_control = torch.hstack((b_upper, b_lower))
+        b_eq = self.b_eq
+
+        b_control = self.c
         
         # Augmented bounds with slack variables
         b_control_aug = b_control - s
+
+        # Cost matrix 
         
+        cost_mat = self.cost_matrix
         # Linear cost term (following JAX)
-        lincost = (-lamda - 
-                  torch.matmul(self.A_projection.T, xi_samples.T).T - 
+        lincost = (-lamda + self.g - 
                   self.rho_ineq * torch.matmul(self.A_control.T, b_control_aug.T).T)
         
-        # Solve KKT system
+        self.Q_inv = torch.linalg.inv(cost_mat)
         
         # Solve KKT system
-        sol = torch.linalg.solve(self.cost_matrix, (-lincost).T).T
+        rhs = torch.hstack((-lincost, b_eq))
+        sol = torch.matmul(self.Q_inv, rhs.T).T
+        # # Solve KKT system
+        # rhs = 
+        # sol = torch.linalg.solve(cost_mat, (-lincost, b_eq).T).T
         
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
@@ -219,7 +261,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0):
+    def compute_projection(self, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
@@ -246,7 +288,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
-                xi_samples, s, xi_projected, lamda)
+                s, xi_projected, lamda)
             
             # Perform GRU acceleration after fixed-point iteration
             r_1 = torch.hstack((s_prev, lamda_prev))
@@ -276,7 +318,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         return xi_projected, primal_residuals, fixed_point_residuals
 
-    def decoder_function(self, inp_norm, xi_samples_input_nn):
+    def decoder_function(self, inp_norm):
         """Decoder function to compute initials from normalized input"""
         # Get neural network output
         neural_output_batch = self.mlp(inp_norm)
@@ -292,7 +334,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         # Run projection
         xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection(
-            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0)
+            xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0)
         
         # Compute average residuals
         avg_res_primal = torch.mean(primal_residuals, dim=0)
@@ -301,11 +343,16 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         return xi_projected, avg_res_fixed_point, avg_res_primal, primal_residuals, fixed_point_residuals
 
     def mlp_loss(self, avg_res_primal, avg_res_fixed_point, xi_samples_input_nn, xi_projected_output_nn):
+        # Normalize input
+        inp_mean = xi_samples_input_nn.mean()
+        inp_std = xi_samples_input_nn.std()
+        inp_norm = (xi_samples_input_nn - inp_mean) / (inp_std + 1e-8)
+
         """Compute loss for optimization"""
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
-        projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, xi_samples_input_nn)
+        projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
 
         # Total loss
         loss = primal_loss + fixed_point_loss + 0.1 * projection_loss
@@ -321,7 +368,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm, xi_samples_input_nn)
+            inp_norm)
         
             
         return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history

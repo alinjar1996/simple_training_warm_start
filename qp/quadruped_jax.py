@@ -177,6 +177,9 @@ class QuadrupedQPProjector:
         
         # Cost matrix 
         cost = (self.H + self.rho * jnp.dot(self.A_control.T, self.A_control))
+
+        print("cost.shape", cost.shape)
+        print("self.A_eq.shape", self.A_eq.shape)
         
         # KKT system matrix ()
         #cost_mat = cost + 0.001*jnp.eye(self.nvar)

@@ -44,6 +44,15 @@ def sample_uniform_forces(key, F_max, num_batch, nvar):
     )
     return xi_samples, rng
 
+def sample_uniform_variable(key, min, max, row_size, col_size):
+    rng = np.random.default_rng(seed=key)
+    xi_samples = rng.uniform(
+        low=min,
+        high=max,
+        size=(row_size, col_size)
+    )
+    return xi_samples, rng
+
 # Parameters for Quadruped Model
 num_batch = 1000
 timestep = 0.05  # 50 Hz control frequency
@@ -55,7 +64,11 @@ body_mass = 50.0  # kg
 body_inertia=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 # Desired motion parameters
-desired_speed = (0.0, 0.0)        # m/s
+desired_speed_x_tensor, rng = sample_uniform_variable(42, -0.5, 0.5, 1, 1)
+desired_speed_x = desired_speed_x_tensor.squeeze().item()
+print("desired_speed_x", desired_speed_x)
+#desired_speed_x = 0.0  # m/s
+desired_speed = (desired_speed_x, 0.0)        # m/s
 desired_twisting_speed = 0.5  # rad/s
 desired_body_height = 0.5     # m
 
@@ -115,18 +128,15 @@ H, g, C, c = controller.getMatrices(
 # Store matrices
 H = H                       # QP Hessian (3nk x 3nk)
 g = g                       # Linear term (3nk)
-C = C                       # Constraint matrix (num_total_constraints x 3nk)
-c_lower = c                       # Lower bound (num_total_constraints)
-c_upper = -c                     # Upper bound (num_total_constraints)
+C = C 
+c = c                      # Constraint matrix (num_total_constraints x 3nk)
 
 # Maximum Iterations
 maxiter_projection = 20
 
-
-
 nvar = H.shape[0]
 C_torch = torch.from_numpy(C).float().to(device)
-A_control = torch.vstack((C_torch, -C_torch))
+A_control = C_torch #torch.vstack((C_torch, -C_torch))
 
 
 num_total_constraints = A_control.shape[0]
@@ -135,6 +145,8 @@ num_total_constraints = A_control.shape[0]
 xi_samples, rng = sample_uniform_forces(42, F_max, num_batch, nvar)
 xi_val, rng_val = sample_uniform_forces(43, F_max, num_batch, nvar)
 
+# xi_samples = torch.zeros(num_batch, nvar)
+# xi_val = torch.zeros(num_batch, nvar)
 inp = xi_samples
 inp_val = xi_val
 
@@ -175,8 +187,7 @@ model = MLPQuadrupedProjectionFilter(
     H=H, 
     g=g, 
     C=C, 
-    c_lower=c_lower, 
-    c_upper=c_upper, 
+    c =c, 
     maxiter_projection=maxiter_projection,
     desired_speed=desired_speed,
     desired_twisting_speed=desired_twisting_speed,
