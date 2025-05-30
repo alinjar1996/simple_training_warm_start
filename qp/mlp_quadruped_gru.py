@@ -177,7 +177,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         print(f"Number of constraints: {self.num_constraints}")
 
         # A_eq_single_horizon: block-diagonal of identity matrices
-        self.A_eq_single_horizon = torch.tile(torch.eye(3),(1,self.num_legs)).to(device) # shape: (3 * num_legs, 3)
+        self.A_eq_single_horizon = torch.tile(torch.asarray([0.0,0.0,1.0]),(1,self.num_legs)).to(device) # shape: (3 * num_legs, 3)
         
         self.I_horizon = torch.eye(self.horizon).to(device)
 
@@ -189,7 +189,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         # b_eq_single_horizon: gravity force applied per batch
         self.b_eq_single_horizon = torch.tile(
-            torch.tensor([[0.0, 0.0, self.body_mass * 9.81]]), (self.num_batch, 1)
+            torch.tensor([self.body_mass * 9.81]), (self.num_batch, 1)
         )  # shape: (num_batch, 3)
 
         self.b_eq_single_horizon = self.b_eq_single_horizon.to(device)
