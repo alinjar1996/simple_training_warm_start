@@ -127,7 +127,7 @@ class MLPProjectionFilter(nn.Module):
     def __init__(self, mlp, lstm_context, lstm_init, num_batch, 
                  num_dof, num_steps, timestep, 
                  v_max, a_max, j_max, 
-                 p_max, theta_init, maxiter_projection):
+                 p_max, theta_init, v_start, v_goal, maxiter_projection):
         super(MLPProjectionFilter, self).__init__()
         
         # MLP Model
@@ -153,8 +153,8 @@ class MLPProjectionFilter(nn.Module):
         self.theta_init = theta_init
         
         # Boundary conditions
-        self.v_start = torch.zeros(num_dof, device=device)
-        self.v_goal = torch.zeros(num_dof, device=device)
+        self.v_start = v_start #torch.zeros(num_dof, device=device)
+        self.v_goal = v_goal #torch.zeros(num_dof, device=device)
 
         # Projection parameters
         self.A_projection = torch.eye(self.nvar, device=device)
@@ -255,8 +255,11 @@ class MLPProjectionFilter(nn.Module):
     def compute_boundary_vec(self):
         """Compute boundary condition vector"""
         # Stack start and goal velocities for all DOFs
-        v_start_batch = self.v_start.unsqueeze(0).repeat(self.num_batch, 1)
-        v_goal_batch = self.v_goal.unsqueeze(0).repeat(self.num_batch, 1)
+        
+        v_start_batch = self.v_start.to(device) #self.v_start.unsqueeze(0).repeat(self.num_batch, 1)
+        v_goal_batch = self.v_goal.to(device) #self.v_goal.unsqueeze(0).repeat(self.num_batch, 1)
+        
+
         b_eq = torch.hstack([v_start_batch, v_goal_batch])
         return b_eq
 
@@ -381,7 +384,7 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, primal_residuals, fixed_point_residuals
 
-    def decoder_function(self, inp_norm, xi_samples_input_nn):
+    def decoder_function(self, inp_norm, input_nn):
         """Decoder function to compute initials from normalized input"""
         # Get neural network output
         neural_output_batch = self.mlp(inp_norm)
@@ -397,6 +400,8 @@ class MLPProjectionFilter(nn.Module):
         h_0, c_0 = self.lstm_init(inp_norm)
 
         # Run projection
+        xi_samples_input_nn = input_nn[:, 0:self.nvar].to(device)
+        
         xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection(
             xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0, c_0)
         
@@ -418,15 +423,15 @@ class MLPProjectionFilter(nn.Module):
 
         return primal_loss, fixed_point_loss, projection_loss, loss
 
-    def forward(self, xi_samples_input_nn):
+    def forward(self, input_nn):
         """Forward pass through the model"""
         # Normalize input
-        inp_mean = xi_samples_input_nn.mean()
-        inp_std = xi_samples_input_nn.std()
-        inp_norm = (xi_samples_input_nn - inp_mean) / inp_std
+        inp_mean = input_nn.mean()
+        inp_std = input_nn.std()
+        inp_norm = (input_nn - inp_mean) / inp_std
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm, xi_samples_input_nn)
+            inp_norm, input_nn)
             
         return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
