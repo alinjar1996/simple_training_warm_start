@@ -20,31 +20,36 @@ from mlp_singledof_gru import MLP, MLPProjectionFilter, CustomGRULayer, GRU_Hidd
 
 
 class TrajDataset(Dataset):
-	"""Expert Trajectory Dataset."""
-	def __init__(self, inp):
-		
-		# input
-		self.inp = inp
+    """Expert Trajectory Dataset."""
+    def __init__(self, inp, theta_init, v_start, v_goal):
+        # input
+        self.inp = inp 
+        self.theta_init = theta_init
+        self.v_start = v_start
+        self.v_goal = v_goal
 
-	
-	def __len__(self):
-		return len(self.inp)    
-			
-	def __getitem__(self, idx):
+    def __len__(self):
+        return len(self.inp)    
 
-		# Input
-  
-		inp = self.inp[idx]
-		
-				 
-		return torch.tensor(inp).float()	
+    def __getitem__(self, idx):
+        # Input
+        inp = self.inp[idx]
+        theta_init = self.theta_init[idx]
+        v_start = self.v_start[idx]
+        v_goal = self.v_goal[idx]
 
-def sample_uniform_trajectories(key, v_max, num_batch, nvar):
+        return (torch.tensor(inp).float(),
+                torch.tensor(theta_init).float(),
+                torch.tensor(v_start).float(),
+                torch.tensor(v_goal).float())
+    
+
+def sample_uniform_trajectories(key, var_min, var_max, dataset_size, nvar):
     rng = np.random.default_rng(seed=key)
     xi_samples = rng.uniform(
-        low=-v_max,
-        high=v_max,
-        size=(num_batch, nvar)
+        low=var_min,
+        high=var_max,
+        size=(dataset_size, nvar)
     )
     return xi_samples, rng
 
@@ -59,7 +64,8 @@ v_max=1.0
 a_max=2.0
 j_max=5.0
 p_max=180.0*np.pi/180.0 
-theta_init=0.0
+theta_init_min=0.0
+theta_init_max=2*np.pi
 
 # vmax = 1.0
 # num_batch = 1000
@@ -87,14 +93,25 @@ maxiter_projection = 20
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device} device")
 
+dataset_size = num_batch * 2#200000#num_batch#
+
+#For Training
+theta_init, rng_theta_init = sample_uniform_trajectories(41, var_min= theta_init_min, var_max = theta_init_max, dataset_size=dataset_size, nvar=1)
+#print("theta_init", theta_init.shape)
+v_start, rng_v_start = sample_uniform_trajectories(40, var_min =-0.8*v_max, var_max = 0.8*v_max, dataset_size=dataset_size, nvar=1)
+#print("v_start", v_start.shape)
+v_goal, rng_v_goal = sample_uniform_trajectories(39, var_min =-0.8*v_max, var_max = 0.8*v_max, dataset_size=dataset_size, nvar=1)
+
 #For training
-xi_samples, rng = sample_uniform_trajectories(42, v_max, num_batch, nvar)
+xi_samples, rng = sample_uniform_trajectories(42, var_min=-v_max, var_max=v_max ,dataset_size=dataset_size, nvar=nvar)
 
 #For validation
-xi_val, rng_val = sample_uniform_trajectories(43, v_max*5.0, num_batch, nvar)
+xi_val, rng_val = sample_uniform_trajectories(43, var_min=-2*v_max, var_max=2*v_max ,dataset_size=dataset_size, nvar=nvar)
 
-inp = xi_samples
-inp_val = xi_val
+
+inp = np.hstack(( xi_samples, theta_init, v_start, v_goal))
+
+inp_val = np.hstack(( xi_val, theta_init, v_start, v_goal))
 
 # inp_mean, inp_std = inp.mean(), inp.std()
 
@@ -103,8 +120,8 @@ inp_val = xi_val
 
 
 # Using PyTorch Dataloader
-train_dataset = TrajDataset(inp)
-val_dataset = TrajDataset(inp_val)
+train_dataset = TrajDataset(inp, theta_init, v_start, v_goal)
+val_dataset = TrajDataset(inp_val, theta_init, v_start, v_goal)
 
 train_loader = DataLoader(train_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
 val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
@@ -142,7 +159,7 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
 model = MLPProjectionFilter(mlp=mlp,gru_context=gru_context, gru_init=gru_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
 							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							theta_init=theta_init, maxiter_projection=maxiter_projection).to(device)
+							maxiter_projection=maxiter_projection).to(device)
 
 print(type(model))
 
@@ -162,14 +179,18 @@ for epoch in range(epochs):
     # Train Loop
     losses_train, primal_losses, fixed_point_losses, projection_losses = [], [], [], []
     
-    for (inp) in tqdm(train_loader):
+    for (inp, theta_init, v_start, v_goal) in tqdm(train_loader):
         
         # Input and Output 
         inp = inp.to(device)
+        theta_init = theta_init.to(device)
+        v_start = v_start.to(device)
+        v_goal = v_goal.to(device)
         
 
-        xi_projected, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp)
-        primal_loss, fixed_point_loss, projection_loss, loss = model.mlp_loss(accumulated_res_primal, accumulated_res_fixed_point, inp, xi_projected)
+        xi_projected, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp, theta_init, v_start, v_goal)
+        xi_samples_inp = inp[:, :nvar]
+        primal_loss, fixed_point_loss, projection_loss, loss = model.mlp_loss(accumulated_res_primal, accumulated_res_fixed_point, xi_samples_inp, xi_projected)
 
         
         optimizer.zero_grad() #clears the gradients of the model parameters
@@ -204,14 +225,19 @@ for epoch in range(epochs):
         val_losses = []
 
         with torch.no_grad():
-            for (inp_val) in tqdm(val_loader):
+            for (inp_val, theta_init, v_start, v_goal) in tqdm(val_loader):
                 inp_val = inp_val.to(device)
+                theta_init = theta_init.to(device)
+                v_start = v_start.to(device)
+                v_goal =  v_goal.to(device)
 
                 xi_projected, accumulated_res_fixed_point, accumulated_res_primal, \
-                accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp_val)
+                accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp_val, theta_init, v_start, v_goal)
+
+                xi_samples_inp_val = inp_val[:, :nvar]
 
                 _, _, _, val_loss = model.mlp_loss(
-                    accumulated_res_primal, accumulated_res_fixed_point, inp_val, xi_projected
+                    accumulated_res_primal, accumulated_res_fixed_point, xi_samples_inp_val, xi_projected
                 )
 
                 val_losses.append(val_loss.detach().cpu().numpy())
@@ -234,7 +260,7 @@ for epoch in range(epochs):
     os.makedirs("./training_weights", exist_ok=True)
     #if mean_val_loss <= last_loss:
     if loss <= last_loss:
-            torch.save(model.state_dict(), f"./training_weights/mlp_learned_single_dof_gru.pth")
+            torch.save(model.state_dict(), f"./training_weights/mlp_learned_single_dof_gru2.pth")
             last_loss = loss
 
     avg_train_loss.append(np.average(losses_train)), avg_primal_loss.append(np.average(primal_losses)), \

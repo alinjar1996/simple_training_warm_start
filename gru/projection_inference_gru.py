@@ -18,12 +18,12 @@ from tqdm import trange, tqdm
 # Import the single DOF finite difference model MLP model
 from mlp_singledof_gru import MLP, MLPProjectionFilter, CustomGRULayer, GRU_Hidden_State
 
-def sample_uniform_trajectories(key, v_max, num_batch, nvar):
+def sample_uniform_trajectories(key, var_min, var_max, dataset_size, nvar):
     rng = np.random.default_rng(seed=key)
     xi_samples = rng.uniform(
-        low=-v_max,
-        high=v_max,
-        size=(num_batch, nvar)
+        low=var_min,
+        high=var_max,
+        size=(dataset_size, nvar)
     )
     return xi_samples, rng
 
@@ -37,13 +37,15 @@ v_max=1.0
 a_max=2.0
 j_max=5.0
 p_max=180.0*np.pi/180.0 
-theta_init=0.0
+
 
 # vmax = 1.0
 # num_batch = 1000
 # nvar = 1
 nvar_single = num_steps
 nvar = num_dof * nvar_single
+theta_init_min=0.0
+theta_init_max=2*np.pi
 
 
 #calculating number of constraints
@@ -57,6 +59,7 @@ num_pos_constraints = 2 * num_pos * num_dof
 num_total_constraints = (num_vel_constraints + num_acc_constraints + 
                             num_jerk_constraints + num_pos_constraints)
 
+dataset_size = num_batch#200000
 #Maximum Iterations
 maxiter_projection = 20
 
@@ -66,13 +69,28 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using {device} device")
 
 #For training
-xi_samples, rng = sample_uniform_trajectories(42, v_max, num_batch, nvar)
+theta_init, rng_theta_init = sample_uniform_trajectories(41, var_min= theta_init_min, var_max = theta_init_max, dataset_size=dataset_size, nvar=1)
+#print("theta_init", theta_init.shape)
+v_start, rng_v_start = sample_uniform_trajectories(40, var_min =-0.8*v_max, var_max = 0.8*v_max, dataset_size=dataset_size, nvar=1)
+#print("v_start", v_start.shape)
+v_goal, rng_v_goal = sample_uniform_trajectories(39, var_min =-0.8*v_max, var_max = 0.8*v_max, dataset_size=dataset_size, nvar=1)
 
-#For validation
-xi_val, rng_val = sample_uniform_trajectories(43, v_max*5.0, num_batch, nvar)
+#For Testing with Scalar value
+theta_init_scalar = 0.0*np.pi
+v_start_scalar = 0.0
+v_goal_scalar = 0.0
+theta_init = np.tile(theta_init_scalar, (dataset_size,1))
+v_start = np.tile(v_start_scalar, (dataset_size,1))
+v_goal = np.tile(v_goal_scalar, (dataset_size,1))
 
-inp = xi_samples
-inp_val = xi_val
+#For training
+xi_samples, rng = sample_uniform_trajectories(42, var_min=-v_max, var_max=v_max ,dataset_size=dataset_size, nvar=nvar)
+
+
+inp = np.hstack(( xi_samples, theta_init, v_start, v_goal))
+
+print(inp.shape)
+
 
 inp_mean, inp_std = inp.mean(), inp.std()
 
@@ -107,7 +125,7 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
 model = MLPProjectionFilter(mlp=mlp,gru_context=gru_context, gru_init=gru_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
 							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							theta_init=theta_init, maxiter_projection=maxiter_projection).to(device)
+							maxiter_projection=maxiter_projection).to(device)
 
 print(type(model))
 
@@ -122,13 +140,22 @@ model.eval()
 inp_test = inp
 inp_test = torch.tensor(inp_test).float()
 inp_test = inp_test.to(device)
+inp_mean = inp_test.mean()
+inp_std = inp_test.std()
+
+theta_init_test = torch.from_numpy(theta_init).float().to(device)
+v_start_test = torch.from_numpy(v_start).float().to(device)
+v_goal_test = torch.from_numpy(v_goal).float().to(device)
+
 # inp_test = torch.vstack([inp_test] * num_batch)
 inp_norm_test = (inp_test - inp_mean) / inp_std
 
 xi_samples_input_nn_test = inp_test
 
 with torch.no_grad():
-    xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, xi_samples_input_nn_test)
+    xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, xi_samples_input_nn_test, 
+                                                                                                                            theta_init_test, v_start_test, 
+                                                                                                                            v_goal_test)
 
 # Convert to numpy for analysis
 xi_np = np.array(xi_samples)
