@@ -179,7 +179,7 @@ print(type(model))
 
 #Training
 
-epochs = 100
+epochs = 500
 #step, beta = 0, 1.0 # 3.5
 optimizer = optim.AdamW(model.parameters(), lr = 1e-3, weight_decay=6e-5)
 #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1, verbose=True)

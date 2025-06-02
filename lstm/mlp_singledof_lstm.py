@@ -222,9 +222,13 @@ class MLPProjectionFilter(nn.Module):
         
         # Equality constraint matrix (boundary conditions)
         # Constrain first and last velocity for each DOF
+        # boundary_matrix = torch.tensor([
+        #     [1.0] + [0.0] * (self.num_steps - 1),    # first timestep
+        #     [0.0] * (self.num_steps - 1) + [1.0]     # last timestep
+        # ], device=device)
+
         boundary_matrix = torch.tensor([
-            [1.0] + [0.0] * (self.num_steps - 1),    # first timestep
-            [0.0] * (self.num_steps - 1) + [1.0]     # last timestep
+            [1.0] + [0.0] * (self.num_steps - 1)    # first timestep
         ], device=device)
         
         self.A_eq = torch.kron(torch.eye(self.num_dof, device=device), boundary_matrix)
@@ -263,7 +267,8 @@ class MLPProjectionFilter(nn.Module):
         v_goal_batch = v_goal
         
 
-        b_eq = torch.hstack([v_start_batch, v_goal_batch])
+        # b_eq = torch.hstack([v_start_batch, v_goal_batch])
+        b_eq = v_start_batch
         return b_eq
 
     def compute_feasible_control(self, xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal):
