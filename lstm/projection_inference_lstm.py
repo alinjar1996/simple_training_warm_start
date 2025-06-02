@@ -75,6 +75,15 @@ v_start, rng_v_start = sample_uniform_trajectories(40, var_min =-0.8*v_max, var_
 #print("v_start", v_start.shape)
 v_goal, rng_v_goal = sample_uniform_trajectories(39, var_min =-0.8*v_max, var_max = 0.8*v_max, dataset_size=dataset_size, nvar=1)
 
+#For Testing with Scalar value
+theta_init_scalar = 0.0*np.pi
+v_start_scalar = 0.0
+v_goal_scalar = 0.0
+theta_init = np.tile(theta_init_scalar, (dataset_size,1))
+v_start = np.tile(v_start_scalar, (dataset_size,1))
+v_goal = np.tile(v_goal_scalar, (dataset_size,1))
+
+
 #For training
 xi_samples, rng = sample_uniform_trajectories(42, var_min=-v_max, var_max=v_max ,dataset_size=dataset_size, nvar=nvar)
 
@@ -82,9 +91,7 @@ xi_samples, rng = sample_uniform_trajectories(42, var_min=-v_max, var_max=v_max 
 inp = np.hstack(( xi_samples, theta_init, v_start, v_goal))
 
 
-theta_init_torch = torch.from_numpy(theta_init).float()
-v_start_torch = torch.from_numpy(v_start).float()
-v_goal_torch = torch.from_numpy(v_goal).float()
+
 
 #LSTM handling
 
@@ -117,7 +124,6 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
 model = MLPProjectionFilter(mlp=mlp,lstm_context=lstm_context, lstm_init=lstm_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
 							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							theta_init=theta_init_torch, v_start=v_start_torch, v_goal=v_goal_torch,
                             maxiter_projection=maxiter_projection).to(device)
 
 print(type(model))
@@ -135,13 +141,20 @@ inp_test = torch.tensor(inp_test).float()
 inp_test = inp_test.to(device)
 inp_mean = inp_test.mean()
 inp_std = inp_test.std()
+
+theta_init_test = torch.from_numpy(theta_init).float().to(device)
+v_start_test = torch.from_numpy(v_start).float().to(device)
+v_goal_test = torch.from_numpy(v_goal).float().to(device)
+
 # inp_test = torch.vstack([inp_test] * num_batch)
 inp_norm_test = (inp_test - inp_mean) / inp_std
 
 xi_samples_input_nn_test = inp_test
 
 with torch.no_grad():
-    xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, xi_samples_input_nn_test)
+    xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, xi_samples_input_nn_test, 
+                                                                                                                            theta_init_test, v_start_test, 
+                                                                                                                            v_goal_test)
 
 # Convert to numpy for analysis
 xi_np = np.array(xi_samples)

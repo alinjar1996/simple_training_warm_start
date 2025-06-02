@@ -20,24 +20,29 @@ from mlp_singledof_lstm import MLP, MLPProjectionFilter, CustomLSTMLayer, LSTM_H
 
 
 class TrajDataset(Dataset):
-	"""Expert Trajectory Dataset."""
-	def __init__(self, inp):
-		
-		# input
-		self.inp = inp
+    """Expert Trajectory Dataset."""
+    def __init__(self, inp, theta_init, v_start, v_goal):
+        # input
+        self.inp = inp 
+        self.theta_init = theta_init
+        self.v_start = v_start
+        self.v_goal = v_goal
 
-	
-	def __len__(self):
-		return len(self.inp)    
-			
-	def __getitem__(self, idx):
+    def __len__(self):
+        return len(self.inp)    
 
-		# Input
-  
-		inp = self.inp[idx]
-		
-				 
-		return torch.tensor(inp).float()	
+    def __getitem__(self, idx):
+        # Input
+        inp = self.inp[idx]
+        theta_init = self.theta_init[idx]
+        v_start = self.v_start[idx]
+        v_goal = self.v_goal[idx]
+
+        return (torch.tensor(inp).float(),
+                torch.tensor(theta_init).float(),
+                torch.tensor(v_start).float(),
+                torch.tensor(v_goal).float())
+
 
 def sample_uniform_trajectories(key, var_min, var_max, dataset_size, nvar):
     rng = np.random.default_rng(seed=key)
@@ -91,7 +96,7 @@ print(f"Using {device} device")
 
 #### creating dataset
 
-dataset_size = 200000#num_batch#
+dataset_size = num_batch * 2#200000#num_batch#
 
 theta_init, rng_theta_init = sample_uniform_trajectories(41, var_min= theta_init_min, var_max = theta_init_max, dataset_size=dataset_size, nvar=1)
 #print("theta_init", theta_init.shape)
@@ -122,18 +127,18 @@ inp_val = np.hstack(( xi_val, theta_init, v_start, v_goal))
 
 
 # Using PyTorch Dataloader
-train_dataset = TrajDataset(inp)
-val_dataset = TrajDataset(inp_val)
+train_dataset = TrajDataset(inp, theta_init, v_start, v_goal)
+val_dataset = TrajDataset(inp_val, theta_init, v_start, v_goal)
 
 train_loader = DataLoader(train_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
 val_loader  = DataLoader(val_dataset, batch_size=num_batch, shuffle=True, num_workers=0, drop_last=True)
 
-theta_init_torch = torch.from_numpy(theta_init).float()
-v_start_torch = torch.from_numpy(v_start).float()
-v_goal_torch = torch.from_numpy(v_goal).float()
+# theta_init_torch = torch.from_numpy(theta_init).float()
+# v_start_torch = torch.from_numpy(v_start).float()
+# v_goal_torch = torch.from_numpy(v_goal).float()
 
-#print("theta_init_torch", theta_init_torch.shape)
-#print("v_start_torch", v_start_torch.shape)
+# #print("theta_init_torch", theta_init_torch.shape)
+# #print("v_start_torch", v_start_torch.shape)
 
 #LSTM handling
 
@@ -165,8 +170,7 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 num_batch = train_loader.batch_size
 
 model = MLPProjectionFilter(mlp=mlp,lstm_context=lstm_context, lstm_init=lstm_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
-							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							theta_init=theta_init_torch, v_start=v_start_torch, v_goal=v_goal_torch, 
+							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max,  
                             maxiter_projection=maxiter_projection).to(device)
 
 print(type(model))
@@ -175,7 +179,7 @@ print(type(model))
 
 #Training
 
-epochs = 500
+epochs = 100
 #step, beta = 0, 1.0 # 3.5
 optimizer = optim.AdamW(model.parameters(), lr = 1e-3, weight_decay=6e-5)
 #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size = 30, gamma = 0.1, verbose=True)
@@ -189,13 +193,16 @@ for epoch in range(epochs):
     # Train Loop
     losses_train, primal_losses, fixed_point_losses, projection_losses = [], [], [], []
     
-    for (inp) in tqdm(train_loader):
+    for (inp, theta_init, v_start, v_goal) in tqdm(train_loader):
         
         # Input and Output 
         inp = inp.to(device)
+        theta_init = theta_init.to(device)
+        v_start = v_start.to(device)
+        v_goal = v_goal.to(device)
         
 
-        xi_projected, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp)
+        xi_projected, accumulated_res_fixed_point, accumulated_res_primal, accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp, theta_init, v_start, v_goal)
         xi_samples_inp = inp[:, :nvar]
         primal_loss, fixed_point_loss, projection_loss, loss = model.mlp_loss(accumulated_res_primal, accumulated_res_fixed_point, xi_samples_inp, xi_projected)
 
@@ -232,11 +239,14 @@ for epoch in range(epochs):
         val_losses = []
 
         with torch.no_grad():
-            for (inp_val) in tqdm(val_loader):
+            for (inp_val, theta_init, v_start, v_goal) in tqdm(val_loader):
                 inp_val = inp_val.to(device)
+                theta_init = theta_init.to(device)
+                v_start = v_start.to(device)
+                v_goal =  v_goal.to(device)
 
                 xi_projected, accumulated_res_fixed_point, accumulated_res_primal, \
-                accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp_val)
+                accumulated_res_primal_temp, accumulated_res_fixed_point_temp = model(inp_val, theta_init, v_start, v_goal)
 
                 xi_samples_inp_val = inp_val[:, :nvar]
 
