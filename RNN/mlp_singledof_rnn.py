@@ -13,6 +13,80 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
+#GRU layer class
+class CustomGRULayer(nn.Module):
+	def __init__(self, input_size, hidden_size, output_size):
+		"""
+		Custom GRU layer with output transformation for single sequence element
+		
+		Args:
+			input_size (int): Size of input features
+			hidden_size (int): Size of hidden state in GRU
+			output_size (int): Size of the output after transformation
+		"""
+		super(CustomGRULayer, self).__init__()
+		
+		# GRU cell for processing input
+		self.gru_cell = nn.GRUCell(input_size, hidden_size)
+		
+		# Transformation layer to generate output from hidden state
+		self.output_transform = nn.Sequential(
+			nn.Linear(hidden_size, hidden_size),
+			nn.Tanh(),
+			nn.Linear(hidden_size, output_size)
+		)
+		
+		self.hidden_size = hidden_size
+		
+	def forward(self, x, h_t):
+		"""
+		Forward pass through the GRU layer
+		
+		Args:
+			x (torch.Tensor): Input tensor of shape [batch_size, input_size]
+			context_vector (torch.Tensor): Context vector to initialize hidden state
+										 Shape: [batch_size, hidden_size]
+		
+		Returns:
+			tuple: (output, hidden_state)
+				- output: tensor of shape [batch_size, output_size]
+				- hidden_state: tensor of shape [batch_size, hidden_size]
+		"""
+		# Initialize hidden state with context vector
+		# h_t = context_vector
+		
+		# Update hidden state with GRU cell
+		h_t = self.gru_cell(x, h_t)
+		
+		# Transform hidden state to generate output
+		g_t = self.output_transform(h_t)
+		
+		return g_t, h_t
+
+
+class GRU_Hidden_State(nn.Module):
+	def __init__(self, inp_dim, hidden_dim, out_dim):
+		super(GRU_Hidden_State, self).__init__()
+		
+		# MC Dropout Architecture
+		self.mlp = nn.Sequential(
+			nn.Linear(inp_dim, hidden_dim),
+			#nn.BatchNorm1d(hidden_dim),
+			nn.LayerNorm(hidden_dim),
+			nn.ReLU(),
+
+			nn.Linear(hidden_dim, hidden_dim),
+			#nn.BatchNorm1d(hidden_dim),
+			nn.LayerNorm(hidden_dim),
+			nn.ReLU(),
+			
+			nn.Linear(hidden_dim, out_dim),
+		)
+	
+	def forward(self, x):
+		out = self.mlp(x)
+		return out
+
 #LSTM layer class
 class CustomLSTMLayer(nn.Module):
 	def __init__(self, input_size, hidden_size, output_size):
@@ -91,6 +165,7 @@ class LSTM_Hidden_State(nn.Module):
 		c_0 = out[:, self.hidden_dim:]
 		return h_0, c_0
 
+
 #MLP class
 class MLP(nn.Module):
     def __init__(self, inp_dim, hidden_dim, out_dim):
@@ -124,18 +199,22 @@ class MLP(nn.Module):
 
 class MLPProjectionFilter(nn.Module):
     
-    def __init__(self, mlp, lstm_context, lstm_init, num_batch, 
+    def __init__(self, mlp, rnn_context, rnn_init, num_batch, 
                  num_dof, num_steps, timestep, 
                  v_max, a_max, j_max, 
-                 p_max, maxiter_projection):
+                 p_max, maxiter_projection, rnn):
         super(MLPProjectionFilter, self).__init__()
         
         # MLP Model
         self.mlp = mlp
 
-        #GRU Model
-        self.lstm_context = lstm_context
-        self.lstm_init = lstm_init
+        if rnn == 'GRU':
+            self.gru_context = rnn_context
+            self.gru_init = rnn_init
+        elif rnn == 'LSTM':
+            self.lstm_context = rnn_context
+            self.lstm_init = rnn_init
+        
         
         # Problem dimensions
         self.num_dof = num_dof
@@ -150,11 +229,7 @@ class MLPProjectionFilter(nn.Module):
         self.a_max = a_max
         self.j_max = j_max
         self.p_max = p_max
-        # self.theta_init = theta_init
         
-        # Boundary conditions
-        # self.v_start = v_start #torch.zeros(num_dof, device=device)
-        # self.v_goal = v_goal #torch.zeros(num_dof, device=device)
 
         # Projection parameters
         self.A_projection = torch.eye(self.nvar, device=device)
@@ -221,12 +296,12 @@ class MLPProjectionFilter(nn.Module):
         self.A_control = torch.vstack((self.A_vel, self.A_acc, self.A_jerk, self.A_pos))
         
         # Equality constraint matrix (boundary conditions)
-        # Constrain first and last velocity for each DOF
+        # # Constrain first and last velocity for each DOF
         # boundary_matrix = torch.tensor([
         #     [1.0] + [0.0] * (self.num_steps - 1),    # first timestep
         #     [0.0] * (self.num_steps - 1) + [1.0]     # last timestep
         # ], device=device)
-
+                
         boundary_matrix = torch.tensor([
             [1.0] + [0.0] * (self.num_steps - 1)    # first timestep
         ], device=device)
@@ -259,14 +334,10 @@ class MLPProjectionFilter(nn.Module):
     def compute_boundary_vec(self, v_start, v_goal):
         """Compute boundary condition vector"""
         # Stack start and goal velocities for all DOFs
-        
         # v_start_batch = self.v_start.to(device) #self.v_start.unsqueeze(0).repeat(self.num_batch, 1)
         # v_goal_batch = self.v_goal.to(device) #self.v_goal.unsqueeze(0).repeat(self.num_batch, 1)
-
         v_start_batch = v_start
         v_goal_batch = v_goal
-        
-
         # b_eq = torch.hstack([v_start_batch, v_goal_batch])
         b_eq = v_start_batch
         return b_eq
@@ -331,7 +402,66 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0):
+    def compute_projection_gru(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0):
+        """Project sampled trajectories following JAX approach"""
+        
+        # Initialize variables
+        xi_projected_init = xi_projected_output_nn
+        lamda_init = lamda_init_nn_output
+        #lamda_init = torch.zeros((self.num_batch, self.nvar), device=device)
+        
+        # Initialize slack variables
+        s_init = s_init_nn_output 
+        
+        # Initialize tracking variables
+        xi_projected = xi_projected_init
+        lamda = lamda_init
+        s = s_init
+        h = h_0
+        
+        primal_residuals = []
+        fixed_point_residuals = []
+        
+        # Projection iterations
+        for idx in range(self.maxiter_projection):
+            xi_projected_prev = xi_projected.clone()
+            lamda_prev = lamda.clone()
+            s_prev = s.clone()
+            
+            # Perform projection step
+            xi_projected, s, res_norm, lamda = self.compute_feasible_control(
+                xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal)
+            
+            #Perform GRU accelaration after fixed-point iteration, i.e., projection step
+            r_1 = torch.hstack((s_prev, lamda_prev))
+            r_2 = torch.hstack((s, lamda))
+            r = torch.hstack((r_1, r_2, r_2 -r_1))
+
+            gru_output, h = self.gru_context(r,h)
+
+            s_delta = gru_output[:, 0: self.num_total_constraints]
+            lamda_delta = gru_output[:, self.num_total_constraints: self.num_total_constraints+self.nvar]
+
+            lamda = lamda+lamda_delta 
+            s = s+s_delta
+            s = torch.maximum( torch.zeros(( self.num_batch, self.num_total_constraints), device = device), s)
+
+            # Compute residuals
+            primal_residual = res_norm
+            fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
+                                  torch.linalg.norm(s_prev - s, dim=1))
+            
+            primal_residuals.append(primal_residual)
+            fixed_point_residuals.append(fixed_point_residual)
+
+        
+        # Stack residuals
+        primal_residuals = torch.stack(primal_residuals)
+        fixed_point_residuals = torch.stack(fixed_point_residuals)
+        
+        return xi_projected, primal_residuals, fixed_point_residuals
+    
+    def compute_projection_lstm(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
@@ -391,8 +521,8 @@ class MLPProjectionFilter(nn.Module):
         fixed_point_residuals = torch.stack(fixed_point_residuals)
         
         return xi_projected, primal_residuals, fixed_point_residuals
-
-    def decoder_function(self, inp_norm, input_nn, theta_init, v_start, v_goal):
+    
+    def decoder_function(self, inp_norm, input_nn, theta_init, v_start, v_goal, rnn):
         """Decoder function to compute initials from normalized input"""
         # Get neural network output
         neural_output_batch = self.mlp(inp_norm)
@@ -404,14 +534,23 @@ class MLPProjectionFilter(nn.Module):
         s_init_nn_output = neural_output_batch[:, 2*self.nvar: 2*self.nvar + self.num_total_constraints]
 
         s_init_nn_output = torch.maximum( torch.zeros(( self.num_batch, self.num_total_constraints ), device = device), s_init_nn_output)
+        
+        xi_samples_input_nn = input_nn[:, 0:self.nvar].to(device)
 
-        h_0, c_0 = self.lstm_init(inp_norm)
+        if rnn == "GRU":
+            h_0 = self.gru_init(inp_norm)
+            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_gru(
+            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0)
+        
+        elif rnn == "LSTM":
+            h_0, c_0 = self.lstm_init(inp_norm)
+            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_lstm(
+            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0)
+
 
         # Run projection
-        xi_samples_input_nn = input_nn[:, 0:self.nvar].to(device)
         
-        xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection(
-            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0)
+
         
         # Compute average residuals
         avg_res_primal = torch.mean(primal_residuals, dim=0)
@@ -431,7 +570,7 @@ class MLPProjectionFilter(nn.Module):
 
         return primal_loss, fixed_point_loss, projection_loss, loss
 
-    def forward(self, input_nn, theta_init, v_start, v_goal):
+    def forward(self, input_nn,  theta_init, v_start, v_goal, rnn):
         """Forward pass through the model"""
         # Normalize input
         inp_mean = input_nn.mean()
@@ -440,6 +579,6 @@ class MLPProjectionFilter(nn.Module):
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm, input_nn, theta_init, v_start, v_goal)
+            inp_norm, input_nn, theta_init, v_start, v_goal, rnn)
             
         return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history

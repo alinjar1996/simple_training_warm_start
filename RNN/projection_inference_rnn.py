@@ -2,6 +2,8 @@ import os
 current_working_directory = os.getcwd()
 print(current_working_directory)
 
+import argparse
+
 import matplotlib.pyplot as plt
 
 
@@ -16,7 +18,7 @@ import scipy.io as sio
 from tqdm import trange, tqdm
 
 # Import the single DOF finite difference model MLP model
-from mlp_singledof_gru import MLP, MLPProjectionFilter, CustomGRULayer, GRU_Hidden_State
+from mlp_singledof_rnn import MLP, MLPProjectionFilter, CustomGRULayer, GRU_Hidden_State, CustomLSTMLayer, LSTM_Hidden_State
 
 def sample_uniform_trajectories(key, var_min, var_max, dataset_size, nvar):
     rng = np.random.default_rng(seed=key)
@@ -26,6 +28,10 @@ def sample_uniform_trajectories(key, var_min, var_max, dataset_size, nvar):
         size=(dataset_size, nvar)
     )
     return xi_samples, rng
+
+parser = argparse.ArgumentParser(description="Choose RNN module: LSTM or GRU")
+parser.add_argument("--rnn_module", type=str, default="LSTM", help="Choose RNN module: LSTM or GRU")
+args = parser.parse_args()
 
 #Parameters for MLP model
 
@@ -94,25 +100,54 @@ print(inp.shape)
 
 inp_mean, inp_std = inp.mean(), inp.std()
 
-#GRU handling
+if args.rnn_module == "GRU":
+    print("Training with GRU")
+    #GRU handling
+    rnn = "GRU"
+    gru_input_size = 3*num_total_constraints+3*nvar
+    # print(gru_input_size)
+    gru_hidden_size = 512
+    # gru_output_size = (2*nvar)**2+2*nvar
+    gru_output_size = num_total_constraints+nvar
+    # gru_context_size = mlp_planner_inp_dim
 
-gru_input_size = 3*num_total_constraints+3*nvar
-# print(gru_input_size)
-gru_hidden_size = 512
-# gru_output_size = (2*nvar)**2+2*nvar
-gru_output_size = num_total_constraints+nvar
-# gru_context_size = mlp_planner_inp_dim
+    gru_context = CustomGRULayer(gru_input_size, gru_hidden_size, gru_output_size)
 
-gru_context = CustomGRULayer(gru_input_size, gru_hidden_size, gru_output_size)
+    rnn_context = gru_context
 
 
-input_hidden_state_init = np.shape(inp)[1]
-mid_hidden_state_init = 512
-out_hidden_state_init = gru_hidden_size
+    input_hidden_state_init = np.shape(inp)[1]
+    mid_hidden_state_init = 512
+    out_hidden_state_init = gru_hidden_size
 
-gru_init  =  GRU_Hidden_State(input_hidden_state_init, mid_hidden_state_init, out_hidden_state_init)
+    gru_init  =  GRU_Hidden_State(input_hidden_state_init, mid_hidden_state_init, out_hidden_state_init)
+    
+    rnn_init = gru_init
+    ##
+elif args.rnn_module == "LSTM":
+    print("Training with LSTM")
+    #LSTM handling
+    rnn = "LSTM"
+    lstm_input_size = 3*num_total_constraints+3*nvar
+    # print(lstm_input_size)
+    lstm_hidden_size = 512
+    # lstm_output_size = (2*nvar)**2+2*nvar
+    lstm_output_size = num_total_constraints+nvar
+    # lstm_context_size = mlp_planner_inp_dim
 
-##
+    lstm_context = CustomLSTMLayer(lstm_input_size, lstm_hidden_size, lstm_output_size)
+
+    rnn_context = lstm_context
+
+    input_hidden_state_init = np.shape(inp)[1]
+    mid_hidden_state_init = 512
+    out_hidden_state_init = lstm_hidden_size
+
+    lstm_init = LSTM_Hidden_State(input_hidden_state_init, mid_hidden_state_init, out_hidden_state_init)
+
+    rnn_init = lstm_init
+
+    ##
 
 enc_inp_dim = np.shape(inp)[1] 
 mlp_inp_dim = enc_inp_dim
@@ -123,13 +158,13 @@ mlp =  MLP(mlp_inp_dim, hidden_dim, mlp_out_dim)
 
 
 
-model = MLPProjectionFilter(mlp=mlp,gru_context=gru_context, gru_init=gru_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
+model = MLPProjectionFilter(mlp=mlp,rnn_context=rnn_context, rnn_init=rnn_init, num_batch = num_batch,num_dof=num_dof,num_steps=num_steps,
 							timestep=timestep,v_max=v_max,a_max=a_max,j_max=j_max,p_max=p_max, 
-							maxiter_projection=maxiter_projection).to(device)
+							maxiter_projection=maxiter_projection, rnn=rnn).to(device)
 
 print(type(model))
 
-model.load_state_dict(torch.load('./training_weights/mlp_learned_single_dof_gru.pth', weights_only=True))
+model.load_state_dict(torch.load(f'./training_weights/mlp_learned_single_dof_{rnn}.pth', weights_only=True))
 model.eval()
 
 
@@ -155,7 +190,7 @@ xi_samples_input_nn_test = inp_test
 with torch.no_grad():
     xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, xi_samples_input_nn_test, 
                                                                                                                             theta_init_test, v_start_test, 
-                                                                                                                            v_goal_test)
+                                                                                                                            v_goal_test, rnn)
 
 # Convert to numpy for analysis
 xi_np = np.array(xi_samples)
@@ -171,7 +206,7 @@ print(f"Prime residuals shape: {prime_residuals_np.shape}")
 print(f"Fixed point residuals shape: {fixed_residuals_np.shape}")
 
 #Save
-os.makedirs('results_GRU_inference', exist_ok=True)
+os.makedirs('results_{rnn}_inference', exist_ok=True)
 
 #Start
 print("Start")
@@ -188,7 +223,7 @@ print(f"Min Prime residuals end: {min(prime_residuals_np[-1])}")
 print(f"Min fixed residuals end: {min(fixed_residuals_np[-1])}")
 
 
-np.savetxt('results_GRU_inference/original_trajectory.csv', xi_np, delimiter=',')  # Save first sample
-np.savetxt('results_GRU_inference/projected_trajectory.csv', xi_filtered_np, delimiter=',')
-np.savetxt('results_GRU_inference/prime_residuals.csv', prime_residuals_np, delimiter=',')
-np.savetxt('results_GRU_inference/fixed_residuals.csv', fixed_residuals_np, delimiter=',')
+np.savetxt('results_{rnn}_inference/original_trajectory.csv', xi_np, delimiter=',')  # Save first sample
+np.savetxt('results_{rnn}_inference/projected_trajectory.csv', xi_filtered_np, delimiter=',')
+np.savetxt('results_{rnn}_inference/prime_residuals.csv', prime_residuals_np, delimiter=',')
+np.savetxt('results_{rnn}_inference/fixed_residuals.csv', fixed_residuals_np, delimiter=',')
