@@ -1,5 +1,5 @@
 import numpy as np
-#from qpsolvers import solve_qp
+from qpsolvers import solve_qp
 
 
 class QPCostMatrices():
@@ -33,7 +33,7 @@ class QPCostMatrices():
    
 
 
-    # def solveQP(self, A_qp, B_qp, x_init, x_ref, force_constraints):
+    # def solveQP_defsol(self, A_qp, B_qp, x_init, x_ref, force_constraints):
 
     #     self._createFullCostMatrices()
 

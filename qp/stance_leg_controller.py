@@ -12,6 +12,8 @@ import numpy as np
 from typing import Any, Sequence, Tuple
 from scipy.spatial.transform import Rotation as R
 
+import qpsolvers
+
 from srbd import SRBD
 from qp_solver import QPCostMatrices
 
@@ -253,12 +255,12 @@ class ForceStanceLegController():
     g = 2*B_qp.T@self.L@(A_qp@x_init - x_ref)
 
 
-
-    # # U = qp_solver.solveQP(A_qp, B_qp, x_init, x_ref, (c, C))
+    U = np.array(qpsolvers.solve_qp(H, g, C, c, solver="clarabel", verbose=False))
+    # U = np.array(qpsolvers.solve_qp(A_qp, B_qp, x_init, x_ref, (c, C)))
 
     # try:
     #   x_res = A_qp@x_init - B_qp@U
     # except Exception as e:
     #    print(e)
     # self._n_count += 1
-    return H, g, C, c
+    return H, g, C, c, U

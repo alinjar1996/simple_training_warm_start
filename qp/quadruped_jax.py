@@ -91,7 +91,7 @@ class QuadrupedQPProjector:
         )
         
         # Get QP matrices
-        H, g, C, c = controller.getMatrices(
+        H, g, C, c, U = controller.getMatrices(
             BaseRollPitchYaw=self.BaseRollPitchYaw,
             AngularVelocityBodyFrame=self.AngularVelocityBodyFrame,
             ComVelocityBodyFrame=self.ComVelocityBodyFrame,
@@ -107,8 +107,10 @@ class QuadrupedQPProjector:
         self.g = g                       # Linear term (3nk)
         self.C = C                       # Constraint matrix (num_total_constraints x 3nk)
                               # Lower bound (num_total_constraints)
-        self.c = c                     # Upper bound (num_total_constraints)
-
+        self.c = c            # Upper bound (num_total_constraints)
+ 
+        
+        self.U = U            #Default Solver results         
 
         # Dimensions
         self.nvar = H.shape[0]         # 3nk
@@ -121,22 +123,22 @@ class QuadrupedQPProjector:
         self.num_total_constraints = self.A_control.shape[0] #Since stacking them later
         print("self.num_total_constraints", self.num_total_constraints)
 
-        self.A_eq_single_row = jnp.array([0.0, 0.0, 1.0])
+        # self.A_eq_single_row = jnp.array([0.0, 0.0, 1.0])
         
-        self.A_eq_single_horizon = jnp.tile(self.A_eq_single_row,self.num_legs)
+        # self.A_eq_single_horizon = jnp.tile(self.A_eq_single_row,self.num_legs)
 
-        self.A_eq = jnp.kron(jnp.eye(self.horizon), self.A_eq_single_horizon)
+        # self.A_eq = jnp.kron(jnp.eye(self.horizon), self.A_eq_single_horizon)
 
 
-        print("self.A_eq.shape", self.A_eq.shape)
+        # print("self.A_eq.shape", self.A_eq.shape)
 
-        self.b_eq_single_horizon = jnp.tile(jnp.array(self.body_mass*9.81), (self.num_batch, 1))
+        # self.b_eq_single_horizon = jnp.tile(jnp.array(self.body_mass*9.81), (self.num_batch, 1))
 
-        self.b_eq = jnp.tile(self.b_eq_single_horizon,(1,self.horizon))
+        # self.b_eq = jnp.tile(self.b_eq_single_horizon,(1,self.horizon))
 
         # self.b_eq = jnp.tile(jnp.array([0.0, 0.0, self.body_mass*9.81*self.horizon]), (self.num_batch, 1))
 
-        print("self.b_eq.shape", self.b_eq.shape)
+        # print("self.b_eq.shape", self.b_eq.shape)
 
 
 
@@ -145,8 +147,6 @@ class QuadrupedQPProjector:
     def compute_s_init(self, xi_projected):
         """Initialize slack variables following  approach"""
 
-
-        
 
         b_control = self.c
 
@@ -167,9 +167,7 @@ class QuadrupedQPProjector:
         """
         Compute feasible control following  approach exactly
         """
-        
-        
-        b_eq = self.b_eq
+        #b_eq = self.b_eq
 
         b_control = self.c
 
@@ -180,15 +178,15 @@ class QuadrupedQPProjector:
         cost = (self.H + self.rho * jnp.dot(self.A_control.T, self.A_control))
 
         print("cost.shape", cost.shape)
-        print("self.A_eq.shape", self.A_eq.shape)
+        
         
         # KKT system matrix ()
-        #cost_mat = cost + 0.001*jnp.eye(self.nvar)
+        cost_mat = cost #+ 0.001*jnp.eye(self.nvar)
                 
-        cost_mat = jnp.vstack((
-            jnp.hstack((cost, self.A_eq.T)),
-            jnp.hstack((self.A_eq, jnp.zeros((jnp.shape(self.A_eq)[0], jnp.shape(self.A_eq)[0]))))
-        ))
+        # cost_mat = jnp.vstack((
+        #     jnp.hstack((cost, self.A_eq.T)),
+        #     jnp.hstack((self.A_eq, jnp.zeros((jnp.shape(self.A_eq)[0], jnp.shape(self.A_eq)[0]))))
+        # ))
         
         # Linear cost term (following )
         lincost = (-lamda 
@@ -196,9 +194,9 @@ class QuadrupedQPProjector:
                   self.rho * jnp.dot(self.A_control.T, b_control_aug.T).T)
         
         # Solve KKT system ()
-        sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
+        # sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
         
-        #sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
+        sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
         
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
@@ -292,7 +290,7 @@ def main():
     num_legs=4
     friction_coeff=0.2
     timestep=0.05
-    horizon=2
+    horizon=10
     foot_x=0.2
     foot_y=0.2
     foot_z=-desired_body_height
@@ -382,11 +380,15 @@ def main():
     # print("projector.A_eq.shape", projector.A_eq.shape)
     # print(f"xi_proj.shape", xi_proj.shape)
     # print(f"projector.b_eq.shape", projector.b_eq.shape)
-    eq_res = jnp.matmul(projector.A_eq, xi_proj.T) - projector.b_eq.T
-    print("eq_res max:", max(eq_res))
-    print("eq_res min:", min(eq_res))
+    # eq_res = jnp.matmul(projector.A_eq, xi_proj.T) - projector.b_eq.T
+    # print("eq_res max:", max(eq_res))
+    # print("eq_res min:", min(eq_res))
     
     print("\nBatched Quadruped QP projection complete!")
+
+    print("Check default Qp solvers")
+    print("U", projector.U.shape)
+    print("U", projector.U[:12])
 
 if __name__ == "__main__":
     main()
