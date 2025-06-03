@@ -143,24 +143,7 @@ class QuadrupedQPProjector:
 
 
     
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_s_init(self, xi_projected):
-        """Initialize slack variables following  approach"""
 
-
-        b_control = self.c
-
-        # jax.debug.print("xi_projected: {0}", jnp.shape(xi_projected))
-        # jax.debug.print("b_control: {0}", jnp.shape(b_control))
-        # jax.debug.print("self.A_control: {0}", jnp.shape(self.A_control))
-
-        # Initialize slack variables ()
-        s = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_total_constraints)),
-            -jnp.dot(self.A_control, xi_projected.T).T + b_control
-        )
-
-        return s
     
     @partial(jax.jit, static_argnums=(0,))
     def compute_feasible_control(self, s, xi_projected, lamda): 
@@ -224,13 +207,10 @@ class QuadrupedQPProjector:
         return xi_projected, s, res_norm, lamda
 
     @partial(jax.jit, static_argnums=(0,))
-    def compute_qp_projection(self, xi_init, lamda_init):
+    def compute_qp_projection(self, xi_init, lamda_init, s_init):
         """Run batched ADMM iterations to project xi_init onto constraints"""
 
         xi_projected_init = xi_init
-        
-        s_init = self.compute_s_init(xi_projected_init)
-
         
         def lax_custom_qp(carry, _):
             
@@ -243,8 +223,7 @@ class QuadrupedQPProjector:
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(s, xi_projected, lamda)
             # xi_new, lamda_new, primal_residual, fixed_point_residual = self.compute_feasible_control(xi, s_init, xi_projected, lamda)
             primal_residual = res_norm
-            fixed_point_residual = (jnp.linalg.norm(xi_projected - xi_prev, axis=1) + 
-                                  jnp.linalg.norm(lamda - lamda_prev, axis=1) +
+            fixed_point_residual = (jnp.linalg.norm(lamda - lamda_prev, axis=1) +
                                   jnp.linalg.norm(s - s_prev, axis=1))
             return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
 
@@ -322,6 +301,8 @@ def main():
     
 
     lamda_init = jnp.zeros((projector.num_batch, projector.nvar))
+    s_init =jnp.zeros((projector.num_batch, projector.num_total_constraints))
+    
     
     #print(f"Initial xi batch shape: {xi_init.shape}")
     print(f"Initial lambda batch shape: {lamda_init.shape}")
@@ -340,7 +321,7 @@ def main():
 
     # Solve batched QP projection
     start_time = time.time()
-    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_init, lamda_init)
+    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_init, lamda_init, s_init)
     solve_time = time.time() - start_time
     
     print(f"\n=== Solution Results ===")
@@ -374,15 +355,15 @@ def main():
     print(f"Second horizon projected forces: {force_output[0]}")
     
 
-    # Checking Equality Constraints
+    # # Checking Equality Constraints
     
-    print("Checking Equality Constraints:")
-    # print("projector.A_eq.shape", projector.A_eq.shape)
-    # print(f"xi_proj.shape", xi_proj.shape)
-    # print(f"projector.b_eq.shape", projector.b_eq.shape)
-    # eq_res = jnp.matmul(projector.A_eq, xi_proj.T) - projector.b_eq.T
-    # print("eq_res max:", max(eq_res))
-    # print("eq_res min:", min(eq_res))
+    # print("Checking Equality Constraints:")
+    # # print("projector.A_eq.shape", projector.A_eq.shape)
+    # # print(f"xi_proj.shape", xi_proj.shape)
+    # # print(f"projector.b_eq.shape", projector.b_eq.shape)
+    # # eq_res = jnp.matmul(projector.A_eq, xi_proj.T) - projector.b_eq.T
+    # # print("eq_res max:", max(eq_res))
+    # # print("eq_res min:", min(eq_res))
     
     print("\nBatched Quadruped QP projection complete!")
 
@@ -390,9 +371,27 @@ def main():
     print("U", projector.U.shape)
     print("U", -projector.U[:12])
 
+    print("xi_proj", xi_proj.shape)
+    xi_proj_mean = np.mean(xi_proj, axis=0)
+    print("xi_proj_mean", xi_proj_mean.shape)
+
+    # xi_proj and projector.U are both 1D vectors with repeating x, y, z pattern
+    xi_x = xi_proj_mean[0::3]
+    xi_y = xi_proj_mean[1::3]
+    xi_z = xi_proj_mean[2::3]
+
+    
+
+    U_x = projector.U[0::3]
+    U_y = projector.U[1::3]
+    U_z = projector.U[2::3]
+
+    
+
     #Difference between Clarable and Our Own Augmented Lagrangian solver
     print("Difference between Clarable and Our Own Augmented Lagrangian solver")
-    diff = projector.U.reshape(xi_proj.shape[0],xi_proj.shape[1])-xi_proj
+    #diff = projector.U.reshape(xi_proj.shape[0],xi_proj.shape[1])-xi_proj
+    diff = projector.U-xi_proj_mean
     print("xi_proj", xi_proj.shape)
     print("Differnce", diff.shape)
     print("Max difference", diff.max())    
