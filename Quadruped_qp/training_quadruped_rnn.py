@@ -14,7 +14,7 @@ import scipy.io as sio
 from tqdm import trange, tqdm
 
 # Import the quadruped model components from your second file
-from mlp_quadruped_gru import MLP, MLPQuadrupedProjectionFilter, CustomGRULayer, GRU_Hidden_State
+from Quadruped_qp.mlp_quadruped_rnn import MLP, MLPQuadrupedProjectionFilter, CustomGRULayer, GRU_Hidden_State
 from stance_leg_controller import ForceStanceLegController
 
 # Device setup
