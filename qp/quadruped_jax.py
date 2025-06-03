@@ -10,21 +10,21 @@ from stance_leg_controller import ForceStanceLegController
 
 class QuadrupedQPProjector:
     def __init__(self, 
-                 num_batch=10,           # Batch size for parallel processing
-                 maxiter=10,             # Maximum iterations for ADMM
-                 rho=1.0,                # ADMM penalty parameter
-                 desired_speed=(0.0, 0.0),
-                 desired_twisting_speed=0.0,
-                 desired_body_height=0.5,
-                 body_mass=30.0,
-                 body_inertia=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                 num_legs=4,
-                 friction_coeff=0.2,
-                 timestep=0.05,
-                 horizon=10,
-                 foot_x=0.2,
-                 foot_y=0.2,
-                 foot_z=-0.5):
+                 num_batch=None,           # Batch size for parallel processing
+                 maxiter=None,             # Maximum iterations for ADMM
+                 rho=None,                # ADMM penalty parameter
+                 desired_speed=(None, None),
+                 desired_twisting_speed=None,
+                 desired_body_height=None,
+                 body_mass=None,
+                 body_inertia=(None, None, None, None, None, None, None, None, None),
+                 num_legs=None,
+                 friction_coeff=None,
+                 timestep=None,
+                 horizon=None,
+                 foot_x=None,
+                 foot_y=None,
+                 foot_z=None):
         
         # Store parameters
         self.num_batch = num_batch
@@ -110,7 +110,7 @@ class QuadrupedQPProjector:
         self.c = c            # Upper bound (num_total_constraints)
  
         
-        self.U = U            #Default Solver results         
+        self.U = U            #Default Clarabel Solver results         
 
         # Dimensions
         self.nvar = H.shape[0]         # 3nk
@@ -280,8 +280,8 @@ def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
     num_batch=1  # Increased batch size to demonstrate batching
-    maxiter=200
-    rho=1.0
+    maxiter=500
+    rho=1
     desired_speed=(0.0, 0.0)
     desired_twisting_speed=0.0
     desired_body_height=0.5
@@ -330,8 +330,8 @@ def main():
     #xi_samples, key = projector.sample_uniform_forces(key)
 
     xi_init = jnp.zeros((projector.num_batch, projector.nvar))
-    # for i in range(projector.num_legs*projector.horizon):
-    #     xi_init = xi_init.at[:, 3*i+2].set(body_mass * 9.81 / 4.0)
+    for i in range(projector.num_legs*projector.horizon):
+        xi_init = xi_init.at[:, 3*i+2].set(body_mass * 9.81 / 4.0)
     
     force_input = -xi_init[:, :12]
     print(f"Initial Force Input shape: {force_input.shape}")
@@ -388,7 +388,23 @@ def main():
 
     print("Check default Qp solvers")
     print("U", projector.U.shape)
-    print("U", projector.U[:12])
+    print("U", -projector.U[:12])
+
+    #Difference between Clarable and Our Own Augmented Lagrangian solver
+    print("Difference between Clarable and Our Own Augmented Lagrangian solver")
+    diff = projector.U.reshape(xi_proj.shape[0],xi_proj.shape[1])-xi_proj
+    print("xi_proj", xi_proj.shape)
+    print("Differnce", diff.shape)
+    print("Max difference", diff.max())    
+    print("Min difference", diff.min()) 
+
+    # Find the index of the max and min elements
+    max_idx = np.unravel_index(np.argmax(diff), diff.shape)
+    min_idx = np.unravel_index(np.argmin(diff), diff.shape)
+
+    # Print values and their locations
+    print("Max difference:", diff[max_idx], "at index", max_idx)
+    print("Min difference:", diff[min_idx], "at index", min_idx)   
 
 if __name__ == "__main__":
     main()
