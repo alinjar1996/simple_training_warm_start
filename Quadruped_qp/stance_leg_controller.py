@@ -203,7 +203,8 @@ class ForceStanceLegController():
                      FootPositionsInBodyFrame,
                      FootContacts,
                      slope_estimate,
-                     RotationBodyWrtWorld):
+                     RotationBodyWrtWorld,
+                     Training: bool):
     """Computes the torque for stance legs."""
     # desired_speed is in the body frame
     desired_com_velocity = np.array((self.desired_speed[0], self.desired_speed[1], 0.), dtype=np.float64)
@@ -254,8 +255,10 @@ class ForceStanceLegController():
     H = 2*(B_qp.T@self.L@B_qp + self.K)
     g = 2*B_qp.T@self.L@(A_qp@x_init - x_ref)
 
-
-    U = np.array(qpsolvers.solve_qp(H, g, C, c, solver="clarabel", verbose=False))
+    if Training:
+      U = np.zeros((3*self.num_legs*self.horizon, ))
+    else:    
+      U = np.array(qpsolvers.solve_qp(H, g, C, c, solver="clarabel", verbose=False))
     # U = np.array(qpsolvers.solve_qp(A_qp, B_qp, x_init, x_ref, (c, C)))
 
     # try:

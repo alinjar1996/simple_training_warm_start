@@ -3,6 +3,7 @@ import jax.numpy as jnp
 from functools import partial
 import numpy as np
 import time
+from scipy.spatial.transform import Rotation as R
 
 from stance_leg_controller import ForceStanceLegController
 
@@ -73,11 +74,29 @@ class QuadrupedQPProjector:
         self.ComVelocityBodyFrame = (0.0, 0.0, 0.0)
         self.FootContacts = (True, True, True, True)
         self.slope_estimate = (0.0, 0.0, 0.0)
-        self.RotationBodyWrtWorld = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+
+        roll, pitch, yaw = self.BaseRollPitchYaw
+
+        # Create rotation object from Euler angles (in radians)
+        rot = R.from_euler('xyz', [roll, pitch, yaw])
+
+        # Convert to rotation matrix
+        rotation_matrix = rot.as_matrix()  # Shape (3, 3)
+
+        # Flatten into a 9-element tuple (row-major order)
+        self.RotationBodyWrtWorld = tuple(rotation_matrix.flatten())
+        #self.RotationBodyWrtWorld = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+
+        # self.ComVelocityBodyFrame = tuple(rotation_matrix.T@np.array([self.desired_speed[0], self.desired_speed[1], 0.0]).reshape(-1,1).flatten())
+
+
+        print("ComVelocityBodyFrame", self.ComVelocityBodyFrame)
 
     def setup_optimization_matrices(self):
         """Setup QP matrices using ForceStanceLegController"""
         # Create controller instance
+
         controller = ForceStanceLegController(
             desired_speed=self.desired_speed,
             desired_twisting_speed=self.desired_twisting_speed,
@@ -98,7 +117,8 @@ class QuadrupedQPProjector:
             FootPositionsInBodyFrame=self.FootPositionsInBodyFrame,
             FootContacts=self.FootContacts,
             slope_estimate=self.slope_estimate,
-            RotationBodyWrtWorld=self.RotationBodyWrtWorld
+            RotationBodyWrtWorld=self.RotationBodyWrtWorld,
+            Training=False
         )
         
         
@@ -258,7 +278,7 @@ class QuadrupedQPProjector:
 def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
-    num_batch=1  # Increased batch size to demonstrate batching
+    num_batch=10  # Increased batch size to demonstrate batching
     maxiter=500
     rho=1
     desired_speed=(0.0, 0.0)
@@ -269,7 +289,7 @@ def main():
     num_legs=4
     friction_coeff=0.2
     timestep=0.05
-    horizon=10
+    horizon=5
     foot_x=0.2
     foot_y=0.2
     foot_z=-desired_body_height

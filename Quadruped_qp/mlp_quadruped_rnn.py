@@ -3,6 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from stance_leg_controller import ForceStanceLegController
+
+
 # Reproducibility
 torch.manual_seed(42)
 torch.cuda.manual_seed(42)
@@ -79,6 +82,84 @@ class GRU_Hidden_State(nn.Module):
         out = self.mlp(x)
         return out
 
+#LSTM layer class
+class CustomLSTMLayer(nn.Module):
+	def __init__(self, input_size, hidden_size, output_size):
+		"""
+		Custom LSTM layer with output transformation for single sequence element
+		
+		Args:
+			input_size (int): Size of input features
+			hidden_size (int): Size of hidden state in LSTM
+			output_size (int): Size of the output after transformation
+		"""
+		super(CustomLSTMLayer, self).__init__()
+		
+        #In LSTM, hidden state = long term memory, cell state = short term memory
+		# LSTM cell for processing input
+		self.lstm_cell = nn.LSTMCell(input_size, hidden_size)
+		
+		# Transformation layer to generate output from hidden state
+		self.output_transform = nn.Sequential(
+			nn.Linear(hidden_size, hidden_size),
+			nn.Tanh(),
+			nn.Linear(hidden_size, output_size)
+		)
+		
+		self.hidden_size = hidden_size
+		
+	def forward(self, x, h_t, c_t):
+		"""
+		Forward pass through the LSTM layer
+		
+		Args:
+			x (torch.Tensor): Input tensor of shape [batch_size, input_size]
+			h_t (torch.Tensor): Hidden state tensor of shape [batch_size, hidden_size]
+			c_t (torch.Tensor): Cell state tensor of shape [batch_size, hidden_size]
+		
+		Returns:
+			tuple: (output, hidden_state, cell_state)
+				- output: tensor of shape [batch_size, output_size]
+				- hidden_state: tensor of shape [batch_size, hidden_size]
+				- cell_state: tensor of shape [batch_size, hidden_size]
+		"""
+		# Update hidden state and cell state with LSTM cell
+		h_t, c_t = self.lstm_cell(x, (h_t, c_t))
+		
+		# Transform hidden state to generate output
+		g_t = self.output_transform(h_t)
+		
+		return g_t, h_t, c_t
+
+
+class LSTM_Hidden_State(nn.Module):
+	def __init__(self, inp_dim, hidden_dim, out_dim):
+		super(LSTM_Hidden_State, self).__init__()
+		
+		# MC Dropout Architecture
+		self.mlp = nn.Sequential(
+			nn.Linear(inp_dim, hidden_dim),
+			#nn.BatchNorm1d(hidden_dim),
+			nn.LayerNorm(hidden_dim),
+			nn.ReLU(),
+
+			nn.Linear(hidden_dim, hidden_dim),
+			#nn.BatchNorm1d(hidden_dim),
+			nn.LayerNorm(hidden_dim),
+			nn.ReLU(),
+			
+			nn.Linear(hidden_dim, out_dim * 2),  # Output both h_0 and c_0
+		)
+		
+		self.hidden_dim = out_dim
+	
+	def forward(self, x):
+		out = self.mlp(x)
+		# Split output into hidden state and cell state
+		h_0 = out[:, :self.hidden_dim]
+		c_0 = out[:, self.hidden_dim:]
+		return h_0, c_0
+
 
 # MLP class
 class MLP(nn.Module):
@@ -110,28 +191,36 @@ class MLP(nn.Module):
 
 class MLPQuadrupedProjectionFilter(nn.Module):
     
-    def __init__(self, mlp, gru_context, gru_init, num_batch, 
-                 H, g, C, c, maxiter_projection,
-                 desired_speed, desired_twisting_speed,
+    def __init__(self, mlp, rnn_context, rnn_init, num_batch,
+                 maxiter_projection,
+                 BaseRollPitchYaw,AngularVelocityBodyFrame,
+                 ComVelocityBodyFrame,FootPositionsInBodyFrame,
+                 FootContacts,slope_estimate,
+                 RotationBodyWrtWorld, 
                  desired_body_height, body_mass,
                  body_inertia,
-                 num_legs, friction_coeff, timestep, horizon):
+                 num_legs, friction_coeff, timestep, horizon, rnn):
         super(MLPQuadrupedProjectionFilter, self).__init__()
         
         # MLP Model
         self.mlp = mlp
 
-        # GRU Model
-        self.gru_context = gru_context
-        self.gru_init = gru_init
+        if rnn == 'GRU':
+            self.gru_context = rnn_context
+            self.gru_init = rnn_init
+        elif rnn == 'LSTM':
+            self.lstm_context = rnn_context
+            self.lstm_init = rnn_init
         
         # Problem dimensions
         self.num_batch = num_batch
         self.maxiter_projection = maxiter_projection
+
+
         
         # Quadruped parameters
-        self.desired_speed = desired_speed
-        self.desired_twisting_speed = desired_twisting_speed
+        # self.desired_speed = desired_speed
+        # self.desired_twisting_speed = desired_twisting_speed
         self.desired_body_height = desired_body_height
         self.body_mass = body_mass
         self.body_inertia = body_inertia
@@ -140,15 +229,27 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         self.timestep = timestep
         self.horizon = horizon
         
-        # QP matrices (converted from JAX to PyTorch)
-        self.H = torch.tensor(H, dtype=torch.float32, device=device)
-        self.g = torch.tensor(g, dtype=torch.float32, device=device)
-        self.C = torch.tensor(C, dtype=torch.float32, device=device)
-        self.c = torch.tensor(c, dtype=torch.float32, device=device)
+        self.BaseRollPitchYaw = BaseRollPitchYaw
+        self.AngularVelocityBodyFrame = AngularVelocityBodyFrame
+        self.ComVelocityBodyFrame = ComVelocityBodyFrame
+        self.FootPositionsInBodyFrame = FootPositionsInBodyFrame
+        self.FootContacts = FootContacts
+        self.slope_estimate = slope_estimate
+        self.RotationBodyWrtWorld = RotationBodyWrtWorld
+
+        # # QP matrices (converted from JAX to PyTorch)
+        # self.H = torch.tensor(self.H, dtype=torch.float32, device=device)
+        # self.g = torch.tensor(self.g, dtype=torch.float32, device=device)
+        # self.C = torch.tensor(self.C, dtype=torch.float32, device=device)
+        # self.c = torch.tensor(self.c, dtype=torch.float32, device=device)
+
+
  
         
         # Problem dimensions
-        self.nvar = self.H.shape[0]
+        #Specific for Quadruped
+        self.nvar = 3*self.num_legs*self.horizon
+        self.num_constraints = 2*self.nvar  
         
         # Projection parameters
         self.A_projection = torch.eye(self.nvar, device=device)
@@ -164,81 +265,110 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         """Setup matrices following JAX approach"""
         
         # Combined control matrix (stack C and -C)
-        self.A_control = self.C #torch.vstack((self.C, -self.C))
+        #A_control = self.C #torch.vstack((self.C, -self.C))
         
         # Number of constraints
-        self.num_constraints = self.A_control.shape[0]
+        #self.num_constraints = A_control.shape[0]
         
-        print(f"Problem dimensions:")
-        print(f"H matrix shape: {self.H.shape}")
-        print(f"g vector shape: {self.g.shape}")
-        print(f"C matrix shape: {self.C.shape}")
-        print(f"Number of variables: {self.nvar}")
-        print(f"Number of constraints: {self.num_constraints}")
+        # print(f"Problem dimensions:")
+        # print(f"H matrix shape: {self.H.shape}")
+        # print(f"g vector shape: {self.g.shape}")
+        # print(f"C matrix shape: {self.C.shape}")
+        # print(f"Number of variables: {self.nvar}")
+        # print(f"Number of constraints: {self.num_constraints}")
 
-        # A_eq_single_horizon: block-diagonal of identity matrices
-        self.A_eq_single_horizon = torch.tile(torch.asarray([0.0,0.0,1.0]),(1,self.num_legs)).to(device) # shape: (3 * num_legs, 3)
+        # # A_eq_single_horizon: block-diagonal of identity matrices
+        # self.A_eq_single_horizon = torch.tile(torch.asarray([0.0,0.0,1.0]),(1,self.num_legs)).to(device) # shape: (3 * num_legs, 3)
         
-        self.I_horizon = torch.eye(self.horizon).to(device)
+        # self.I_horizon = torch.eye(self.horizon).to(device)
 
-        # A_eq: kron product with identity across horizon
-        self.A_eq = torch.kron(self.I_horizon, self.A_eq_single_horizon).to(device) # shape: (3 * num_legs * horizon, 3 * horizon)
+        # # A_eq: kron product with identity across horizon
+        # self.A_eq = torch.kron(self.I_horizon, self.A_eq_single_horizon).to(device) # shape: (3 * num_legs * horizon, 3 * horizon)
 
 
-        print("self.A_eq.shape", self.A_eq.shape)
+        # print("self.A_eq.shape", self.A_eq.shape)
 
-        # b_eq_single_horizon: gravity force applied per batch
-        self.b_eq_single_horizon = torch.tile(
-            torch.tensor([self.body_mass * 9.81]), (self.num_batch, 1)
-        )  # shape: (num_batch, 3)
+        # # b_eq_single_horizon: gravity force applied per batch
+        # self.b_eq_single_horizon = torch.tile(
+        #     torch.tensor([self.body_mass * 9.81]), (self.num_batch, 1)
+        # )  # shape: (num_batch, 3)
 
-        self.b_eq_single_horizon = self.b_eq_single_horizon.to(device)
+        # self.b_eq_single_horizon = self.b_eq_single_horizon.to(device)
 
-        # b_eq: repeat across horizon
-        self.b_eq = self.b_eq_single_horizon.repeat(1, self.horizon)  # shape: (num_batch, 3 * horizon)
+        # # b_eq: repeat across horizon
+        # self.b_eq = self.b_eq_single_horizon.repeat(1, self.horizon)  # shape: (num_batch, 3 * horizon)
 
-        self.b_eq = self.b_eq.to(device)
+        # self.b_eq = self.b_eq.to(device)
 
-        print("self.b_eq.shape", self.b_eq.shape)
+        # print("self.b_eq.shape", self.b_eq.shape)
 
                 
-        self.cost = (self.H + self.rho_ineq * torch.matmul(self.A_control.T, self.A_control))
-
-        self.cost = self.cost.to(device)
-
-        print("self.cost.shape", self.cost.shape)
-        
-        self.cost_matrix =torch.vstack((
-            torch.hstack((self.cost, self.A_eq.T)),
-            torch.hstack((self.A_eq, torch.zeros((self.A_eq.shape[0], self.A_eq.shape[0])).to(device))),
-        ))
-
-        self.cost_matrix = self.cost_matrix.to(device)
-
-
-
-    def compute_feasible_control(self, s, xi_projected, lamda):
+    def compute_feasible_control(self, s, lamda, desired_speed, desired_twisting_speed):
         """Compute feasible control following JAX approach exactly"""
         
-        b_eq = self.b_eq
+        desired_speed_tuple = tuple(desired_speed[0].tolist())  # → (0.5, -0.2)
+        # desired_twisting_speed_tuple = tuple(desired_twisting_speed[0].tolist())  # → (0.0, 0.0)
+        # print("desired_speed_tuple", desired_speed_tuple)
+        # print("desired_twisting_speed_tuple", desired_twisting_speed_tuple)
 
-        b_control = self.c
+        desired_twisting_speed_scalar = desired_twisting_speed[0].item()
+
+        # print("desired_twisting_speed_scalar", desired_twisting_speed_scalar)
+        
+        controller = ForceStanceLegController(
+            desired_speed=desired_speed_tuple,
+            desired_twisting_speed=desired_twisting_speed_scalar,
+            desired_body_height=self.desired_body_height,
+            body_mass=self.body_mass,
+            body_inertia=self.body_inertia,
+            num_legs=self.num_legs,
+            friction_coeff=self.friction_coeff,
+            timestep=self.timestep,
+            horizon=self.horizon
+        )
+
+        # Get QP matrices
+        H, g, C, c, _ = controller.getMatrices(
+            BaseRollPitchYaw=self.BaseRollPitchYaw,
+            AngularVelocityBodyFrame=self.AngularVelocityBodyFrame,
+            ComVelocityBodyFrame=self.ComVelocityBodyFrame,
+            FootPositionsInBodyFrame=self.FootPositionsInBodyFrame,
+            FootContacts=self.FootContacts,
+            slope_estimate=self.slope_estimate,
+            RotationBodyWrtWorld=self.RotationBodyWrtWorld,
+            Training = True
+        )
+        H = torch.tensor(H, dtype=torch.float32, device=device)
+        g = torch.tensor(g, dtype=torch.float32, device=device)
+        c = torch.tensor(c, dtype=torch.float32, device=device)
+        C = torch.tensor(C, dtype=torch.float32, device=device)
+
+        A_control = C
+
+        # Cost matrix 
+
+        cost = (H + self.rho_ineq * torch.matmul(A_control.T, A_control)).to(device)
+
+
+        cost_matrix = cost
+        
+        #b_eq = self.b_eq
+
+        b_control = c
         
         # Augmented bounds with slack variables
         b_control_aug = b_control - s
 
-        # Cost matrix 
+        # Linear cost term 
+        lincost = (-lamda + g - 
+                  self.rho_ineq * torch.matmul(A_control.T, b_control_aug.T).T)
         
-        cost_mat = self.cost_matrix
-        # Linear cost term (following JAX)
-        lincost = (-lamda + self.g - 
-                  self.rho_ineq * torch.matmul(self.A_control.T, b_control_aug.T).T)
-        
-        self.Q_inv = torch.linalg.inv(cost_mat)
+        Q_inv = torch.linalg.inv(cost_matrix)
         
         # Solve KKT system
-        rhs = torch.hstack((-lincost, b_eq))
-        sol = torch.matmul(self.Q_inv, rhs.T).T
+        #rhs = torch.hstack((-lincost, b_eq))
+        rhs = -lincost
+        sol = torch.matmul(Q_inv, rhs.T).T
         # # Solve KKT system
         # rhs = 
         # sol = torch.linalg.solve(cost_mat, (-lincost, b_eq).T).T
@@ -249,30 +379,29 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         # Update slack variables (following JAX)
         s = torch.maximum(
             torch.zeros((self.num_batch, self.num_constraints), device=device),
-            -torch.matmul(self.A_control, xi_projected.T).T + b_control
+            -torch.matmul(A_control, xi_projected.T).T + b_control
         )
         
         # Compute residual (following JAX)
-        res_vec = torch.matmul(self.A_control, xi_projected.T).T - b_control + s
+        res_vec = torch.matmul(A_control, xi_projected.T).T - b_control + s
         res_norm = torch.linalg.norm(res_vec, dim=1)
         
         # Update Lagrange multipliers (following JAX)
-        lamda = lamda - self.rho_ineq * torch.matmul(self.A_control.T, res_vec.T).T
+        lamda = lamda - self.rho_ineq * torch.matmul(A_control.T, res_vec.T).T
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection(self, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0):
+    def compute_projection_gru(self, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
-        xi_projected_init = xi_projected_output_nn
+        
         lamda_init = lamda_init_nn_output
         
         # Initialize slack variables
         s_init = s_init_nn_output 
         
         # Initialize tracking variables
-        xi_projected = xi_projected_init
         lamda = lamda_init
         s = s_init
         h = h_0
@@ -282,13 +411,13 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         # Projection iterations
         for idx in range(self.maxiter_projection):
-            xi_projected_prev = xi_projected.clone()
+            #xi_projected_prev = xi_projected.clone()
             lamda_prev = lamda.clone()
             s_prev = s.clone()
             
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
-                s, xi_projected, lamda)
+                s, lamda, desired_speed, desired_twisting_speed)
             
             # Perform GRU acceleration after fixed-point iteration
             r_1 = torch.hstack((s_prev, lamda_prev))
@@ -317,8 +446,66 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         fixed_point_residuals = torch.stack(fixed_point_residuals)
         
         return xi_projected, primal_residuals, fixed_point_residuals
+    
+    def compute_projection_lstm(self, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0, c_0):
+        """Project sampled trajectories following JAX approach"""
+        
+        # Initialize variables
+        
+        lamda_init = lamda_init_nn_output
+        
+        # Initialize slack variables
+        s_init = s_init_nn_output 
+        
+        # Initialize tracking variables
+        
+        lamda = lamda_init
+        s = s_init
+        h = h_0
+        c= c_0
+        
+        primal_residuals = []
+        fixed_point_residuals = []
+        
+        # Projection iterations
+        for idx in range(self.maxiter_projection):
+            #xi_projected_prev = xi_projected.clone()
+            lamda_prev = lamda.clone()
+            s_prev = s.clone()
+            
+            # Perform projection step
+            xi_projected, s, res_norm, lamda = self.compute_feasible_control(
+                s, lamda, desired_speed, desired_twisting_speed)
+            
+            # Perform GRU acceleration after fixed-point iteration
+            r_1 = torch.hstack((s_prev, lamda_prev))
+            r_2 = torch.hstack((s, lamda))
+            r = torch.hstack((r_1, r_2, r_2 - r_1))
 
-    def decoder_function(self, inp_norm):
+            lstm_output, h, c = self.lstm_context(r, h, c)
+
+            s_delta = lstm_output[:, 0: self.num_constraints]
+            lamda_delta = lstm_output[:, self.num_constraints: self.num_constraints+self.nvar]
+
+            lamda = lamda + lamda_delta 
+            s = s + s_delta
+            s = torch.maximum(torch.zeros((self.num_batch, self.num_constraints), device=device), s)
+
+            # Compute residuals
+            primal_residual = res_norm
+            fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
+                                  torch.linalg.norm(s_prev - s, dim=1))
+            
+            primal_residuals.append(primal_residual)
+            fixed_point_residuals.append(fixed_point_residual)
+
+        # Stack residuals
+        primal_residuals = torch.stack(primal_residuals)
+        fixed_point_residuals = torch.stack(fixed_point_residuals)
+        
+        return xi_projected, primal_residuals, fixed_point_residuals
+
+    def decoder_function(self, inp_norm, desired_speed, desired_twisting_speed, rnn):
         """Decoder function to compute initials from normalized input"""
         # Get neural network output
         neural_output_batch = self.mlp(inp_norm)
@@ -330,11 +517,16 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         s_init_nn_output = torch.maximum(torch.zeros((self.num_batch, self.num_constraints), device=device), s_init_nn_output)
 
-        h_0 = self.gru_init(inp_norm)
+        if rnn == "GRU":
+            h_0 = self.gru_init(inp_norm)
+            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_gru(
+            lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0)
+        
+        elif rnn == "LSTM":
+            h_0, c_0 = self.lstm_init(inp_norm)
+            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_lstm(
+            lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0, c_0)
 
-        # Run projection
-        xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection(
-            xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, h_0)
         
         # Compute average residuals
         avg_res_primal = torch.mean(primal_residuals, dim=0)
@@ -342,33 +534,30 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         return xi_projected, avg_res_fixed_point, avg_res_primal, primal_residuals, fixed_point_residuals
 
-    def mlp_loss(self, avg_res_primal, avg_res_fixed_point, xi_samples_input_nn, xi_projected_output_nn):
-        # Normalize input
-        inp_mean = xi_samples_input_nn.mean()
-        inp_std = xi_samples_input_nn.std()
-        inp_norm = (xi_samples_input_nn - inp_mean) / (inp_std + 1e-8)
+    def mlp_loss(self, avg_res_primal, avg_res_fixed_point):
+
 
         """Compute loss for optimization"""
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
-        projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
-
+        # projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
+        #projection_loss = 0.0 * torch.mean(avg_res_fixed_point)
         # Total loss
-        loss = primal_loss + fixed_point_loss + 0.1 * projection_loss
+        loss = primal_loss + fixed_point_loss #+ 0.1 * projection_loss
 
-        return primal_loss, fixed_point_loss, projection_loss, loss
+        return primal_loss, fixed_point_loss, loss
 
-    def forward(self, xi_samples_input_nn):
+    def forward(self, input_nn, desired_speed, desired_twisting_speed, rnn):
         """Forward pass through the model"""
         # Normalize input
-        inp_mean = xi_samples_input_nn.mean()
-        inp_std = xi_samples_input_nn.std()
-        inp_norm = (xi_samples_input_nn - inp_mean) / (inp_std + 1e-8)
+        inp_mean = input_nn.mean()
+        inp_std = input_nn.std()
+        inp_norm = (input_nn - inp_mean) / (inp_std + 1e-8)
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm)
+            inp_norm, desired_speed, desired_twisting_speed, rnn)
         
             
         return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
