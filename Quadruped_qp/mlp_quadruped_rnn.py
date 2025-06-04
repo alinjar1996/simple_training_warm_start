@@ -391,7 +391,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection_gru(self, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0):
+    def compute_projection_gru(self, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables

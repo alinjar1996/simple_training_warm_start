@@ -166,7 +166,7 @@ class QuadrupedQPProjector:
 
     
     @partial(jax.jit, static_argnums=(0,))
-    def compute_feasible_control(self, s, xi_projected, lamda): 
+    def compute_feasible_control(self, s, lamda): 
         """
         Compute feasible control following  approach exactly
         """
@@ -240,7 +240,7 @@ class QuadrupedQPProjector:
             lamda_prev = lamda
             s_prev = s
 
-            xi_projected, s, res_norm, lamda = self.compute_feasible_control(s, xi_projected, lamda)
+            xi_projected, s, res_norm, lamda = self.compute_feasible_control(s, lamda)
             # xi_new, lamda_new, primal_residual, fixed_point_residual = self.compute_feasible_control(xi, s_init, xi_projected, lamda)
             primal_residual = res_norm
             fixed_point_residual = (jnp.linalg.norm(lamda - lamda_prev, axis=1) +
@@ -279,7 +279,7 @@ def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
     num_batch=10  # Increased batch size to demonstrate batching
-    maxiter=500
+    maxiter=500000
     rho=1
     desired_speed=(0.0, 0.0)
     desired_twisting_speed=0.0
@@ -289,7 +289,7 @@ def main():
     num_legs=4
     friction_coeff=0.2
     timestep=0.05
-    horizon=5
+    horizon=10
     foot_x=0.2
     foot_y=0.2
     foot_z=-desired_body_height
@@ -329,10 +329,11 @@ def main():
     
     # Sample random force trajectories for projection
     #xi_samples, key = projector.sample_uniform_forces(key)
-
+    
+    #xi_init is not important, as it is not really used in the projection
     xi_init = jnp.zeros((projector.num_batch, projector.nvar))
-    for i in range(projector.num_legs*projector.horizon):
-        xi_init = xi_init.at[:, 3*i+2].set(body_mass * 9.81 / 4.0)
+    # for i in range(projector.num_legs*projector.horizon):
+    #     xi_init = xi_init.at[:, 3*i+2].set(body_mass * 9.81 / 4.0)
     
     force_input = -xi_init[:, :12]
     print(f"Initial Force Input shape: {force_input.shape}")
@@ -424,6 +425,30 @@ def main():
     # Print values and their locations
     print("Max difference:", diff[max_idx], "at index", max_idx)
     print("Min difference:", diff[min_idx], "at index", min_idx)   
+
+    print("Difference between Clarable and Our Own Augmented Lagrangian solver")
+    diff_x = U_x-xi_x
+    diff_y = U_y-xi_y
+    diff_z = U_z-xi_z
+    # Find the index of the max and min elements 
+    max_idx_x = np.unravel_index(np.argmax(diff_x), diff_x.shape)
+    min_idx_x = np.unravel_index(np.argmin(diff_x), diff_x.shape)
+
+    max_idx_y = np.unravel_index(np.argmax(diff_y), diff_y.shape)
+    min_idx_y = np.unravel_index(np.argmin(diff_y), diff_y.shape)
+
+    max_idx_z = np.unravel_index(np.argmax(diff_z), diff_z.shape)
+    min_idx_z = np.unravel_index(np.argmin(diff_z), diff_z.shape)
+
+    # Print values and their locations
+    print("Max difference x:", diff_x[max_idx_x], "at index", max_idx_x)
+    print("Min difference x:", diff_x[min_idx_x], "at index", min_idx_x)  
+
+    print("Max difference y:", diff_y[max_idx_y], "at index", max_idx_y)   
+    print("Min difference y:", diff_y[min_idx_y], "at index", min_idx_y)  
+    
+    print("Max difference z:", diff_z[max_idx_z], "at index", max_idx_z)   
+    print("Min difference z:", diff_z[min_idx_z], "at index", min_idx_z)   
 
 if __name__ == "__main__":
     main()

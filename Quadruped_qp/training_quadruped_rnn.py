@@ -16,7 +16,7 @@ import argparse
 
 # Import the quadruped model components from your second file
 from mlp_quadruped_rnn import MLP, MLPQuadrupedProjectionFilter, CustomGRULayer, GRU_Hidden_State, CustomLSTMLayer, LSTM_Hidden_State
-from stance_leg_controller import ForceStanceLegController
+
 
 from scipy.spatial.transform import Rotation as R
 
@@ -70,10 +70,6 @@ body_inertia=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 # desired_speed_x_tensor, rng = sample_uniform_variable(42, -0.5, 0.5, 1, 1)
 # desired_speed_x = desired_speed_x_tensor.squeeze().item()
 # print("desired_speed_x", desired_speed_x)
-desired_speed_x = 0.0  # m/s
-desired_speed_y = 0.0  # m/s
-desired_speed = np.array([desired_speed_x, desired_speed_y])        # m/s
-desired_twisting_speed = 0.0  # rad/s
 desired_body_height = 0.5     # m
 
 
