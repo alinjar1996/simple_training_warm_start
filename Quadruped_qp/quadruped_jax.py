@@ -143,6 +143,7 @@ class QuadrupedQPProjector:
         self.num_total_constraints = self.A_control.shape[0] #Since stacking them later
         print("self.num_total_constraints", self.num_total_constraints)
 
+
         # self.A_eq_single_row = jnp.array([0.0, 0.0, 1.0])
         
         # self.A_eq_single_horizon = jnp.tile(self.A_eq_single_row,self.num_legs)
@@ -176,6 +177,10 @@ class QuadrupedQPProjector:
 
         # Augmented bounds with slack variables
         b_control_aug = b_control - s
+
+        # #Make inequality's importance to be zero
+        # self.rho = 0.0
+        # lamda = jnp.zeros((lamda.shape[0], lamda.shape[1]))
         
         # Cost matrix 
         cost = (self.H + self.rho * jnp.dot(self.A_control.T, self.A_control))
@@ -200,7 +205,6 @@ class QuadrupedQPProjector:
         # sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
         
         sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
-        
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
         
@@ -229,8 +233,43 @@ class QuadrupedQPProjector:
     @partial(jax.jit, static_argnums=(0,))
     def compute_qp_projection(self, xi_init, lamda_init, s_init):
         """Run batched ADMM iterations to project xi_init onto constraints"""
+        
+        #Finding s_init from the unconstrained solution
+        # #Make inequality's importance to be zero
+        
+        lamda = lamda_init #jnp.zeros((lamda.shape[0], lamda.shape[1]))
+        
+        # Cost matrix 
+        cost = (self.H) #+ self.rho * jnp.dot(self.A_control.T, self.A_control))
 
-        xi_projected_init = xi_init
+        print("cost.shape", cost.shape)
+        
+        
+        # KKT system matrix ()
+        cost_mat = cost #+ 0.001*jnp.eye(self.nvar)
+                
+        # cost_mat = jnp.vstack((
+        #     jnp.hstack((cost, self.A_eq.T)),
+        #     jnp.hstack((self.A_eq, jnp.zeros((jnp.shape(self.A_eq)[0], jnp.shape(self.A_eq)[0]))))
+        # ))
+        
+        # Linear cost term (following )
+        lincost = (-lamda 
+                    + self.g) 
+        #- 
+        #          self.rho * jnp.dot(self.A_control.T, self.c.T).T)
+        
+        # Solve KKT system ()
+        # sol = jnp.linalg.solve(cost_mat, jnp.hstack((-lincost, b_eq)).T).T
+        
+        sol_init = jnp.linalg.solve(cost_mat, (-lincost).T).T
+        # Extract primal solution
+        xi_projected_init = sol_init[:, 0:self.nvar]
+
+        s_init = jnp.maximum(
+            jnp.zeros((self.num_batch, self.num_total_constraints)),
+            -jnp.dot(self.A_control, xi_projected_init.T).T + self.c
+        )
         
         def lax_custom_qp(carry, _):
             
@@ -243,7 +282,8 @@ class QuadrupedQPProjector:
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(s, lamda)
             # xi_new, lamda_new, primal_residual, fixed_point_residual = self.compute_feasible_control(xi, s_init, xi_projected, lamda)
             primal_residual = res_norm
-            fixed_point_residual = (jnp.linalg.norm(lamda - lamda_prev, axis=1) +
+            fixed_point_residual = (jnp.linalg.norm(xi_projected - xi_prev, axis=1) +
+                                   jnp.linalg.norm(lamda - lamda_prev, axis=1) +
                                   jnp.linalg.norm(s - s_prev, axis=1))
             return (xi_projected, lamda, s), (primal_residual, fixed_point_residual)
 
@@ -278,10 +318,10 @@ class QuadrupedQPProjector:
 def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
-    num_batch=10  # Increased batch size to demonstrate batching
-    maxiter=500000
+    num_batch=1  # Increased batch size to demonstrate batching
+    maxiter=500
     rho=1
-    desired_speed=(0.0, 0.0)
+    desired_speed=(-0.1, 0.0)
     desired_twisting_speed=0.0
     desired_body_height=0.5
     body_mass=30.0

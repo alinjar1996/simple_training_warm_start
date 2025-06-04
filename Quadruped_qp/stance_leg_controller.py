@@ -258,6 +258,9 @@ class ForceStanceLegController():
     if Training:
       U = np.zeros((3*self.num_legs*self.horizon, ))
     else:    
+      #Checking without any inequality constraints
+      #U = np.array(qpsolvers.solve_qp(P=H, q=g, solver="osqp", verbose=False))
+      
       U = np.array(qpsolvers.solve_qp(H, g, C, c, solver="clarabel", verbose=False))
     # U = np.array(qpsolvers.solve_qp(A_qp, B_qp, x_init, x_ref, (c, C)))
 
