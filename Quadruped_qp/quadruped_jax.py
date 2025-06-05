@@ -219,19 +219,22 @@ class QuadrupedQPProjector:
         # Compute residual (following )
         res_vec = jnp.dot(self.A_control, xi_projected.T).T - b_control + s
 
-        #print("res_vec" , res_vec.shape)
+
+        print("xi_projected", xi_projected.shape)   
+        print("res_vec" , res_vec.shape)
         res_norm = jnp.linalg.norm(res_vec, axis=1)
-        #print("res_norm", res_norm.shape)
+        print("res_norm", res_norm.shape)
         
         # Update Lagrange multipliers (following )
         lamda = lamda - self.rho * jnp.dot(self.A_control.T, res_vec.T).T
 
-        
+        # qp_cost = xi_projected.T @ self.H @ (xi_projected)+ xi_projected.T@self.g
+        # qp_cost_norm = jnp.linalg.norm(qp_cost, dim=1)
         # print("lamda", lamda.shape)
         return xi_projected, s, res_norm, lamda
 
-    @partial(jax.jit, static_argnums=(0,))
-    def compute_qp_projection(self, xi_init, lamda_init, s_init):
+    @partial(jax.jit, static_argnums=(0,), static_argnames=("use_zero_s_init",))
+    def compute_qp_projection(self, xi_init, lamda_init, s_init, use_zero_s_init: bool):
         """Run batched ADMM iterations to project xi_init onto constraints"""
         
         #Finding s_init from the unconstrained solution
@@ -265,11 +268,14 @@ class QuadrupedQPProjector:
         sol_init = jnp.linalg.solve(cost_mat, (-lincost).T).T
         # Extract primal solution
         xi_projected_init = sol_init[:, 0:self.nvar]
-
-        s_init = jnp.maximum(
-            jnp.zeros((self.num_batch, self.num_total_constraints)),
-            -jnp.dot(self.A_control, xi_projected_init.T).T + self.c
-        )
+        
+        if use_zero_s_init:
+            s_init = s_init
+        else:
+            s_init = jnp.maximum(
+                jnp.zeros((self.num_batch, self.num_total_constraints)),
+                -jnp.dot(self.A_control, xi_projected_init.T).T + self.c
+            )
         
         def lax_custom_qp(carry, _):
             
@@ -319,9 +325,9 @@ def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
     num_batch=1  # Increased batch size to demonstrate batching
-    maxiter=500
+    maxiter=20
     rho=1
-    desired_speed=(-0.1, 0.0)
+    desired_speed=(-0.2, 0.1)
     desired_twisting_speed=0.0
     desired_body_height=0.5
     body_mass=30.0
@@ -382,7 +388,7 @@ def main():
 
     # Solve batched QP projection
     start_time = time.time()
-    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_init, lamda_init, s_init)
+    xi_proj, primal_residual, fixed_point_residual = projector.compute_qp_projection(xi_init, lamda_init, s_init, use_zero_s_init=False)
     solve_time = time.time() - start_time
     
     print(f"\n=== Solution Results ===")

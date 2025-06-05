@@ -388,8 +388,11 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         # Update Lagrange multipliers (following JAX)
         lamda = lamda - self.rho_ineq * torch.matmul(A_control.T, res_vec.T).T
+
+        qp_cost = xi_projected.T.matmul(H).matmul(xi_projected)+xi_projected.T.matmul(g)
+        qp_cost_norm = torch.linalg.norm(qp_cost, dim=1)
         
-        return xi_projected, s, res_norm, lamda
+        return xi_projected, s, res_norm, lamda, H, g, qp_cost_norm
 
     def compute_projection_gru(self, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0):
         """Project sampled trajectories following JAX approach"""
@@ -416,7 +419,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             s_prev = s.clone()
             
             # Perform projection step
-            xi_projected, s, res_norm, lamda = self.compute_feasible_control(
+            xi_projected, s, res_norm, lamda, qp_cost_norm = self.compute_feasible_control(
                 s, lamda, desired_speed, desired_twisting_speed)
             
             # Perform GRU acceleration after fixed-point iteration
@@ -438,14 +441,18 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
                                   torch.linalg.norm(s_prev - s, dim=1))
             
+            qp_cost_residual = qp_cost_norm
+            
             primal_residuals.append(primal_residual)
             fixed_point_residuals.append(fixed_point_residual)
+            qp_cost_residuals.append(qp_cost_residual)
 
         # Stack residuals
         primal_residuals = torch.stack(primal_residuals)
         fixed_point_residuals = torch.stack(fixed_point_residuals)
+        qp_cost_residuals = torch.stack(qp_cost_residuals)
         
-        return xi_projected, primal_residuals, fixed_point_residuals
+        return xi_projected, primal_residuals, fixed_point_residuals, qp_cost_residuals
     
     def compute_projection_lstm(self, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0, c_0):
         """Project sampled trajectories following JAX approach"""
@@ -519,28 +526,30 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         if rnn == "GRU":
             h_0 = self.gru_init(inp_norm)
-            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_gru(
+            xi_projected, primal_residuals, fixed_point_residuals, qp_cost_residuals = self.compute_projection_gru(
             lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0)
         
         elif rnn == "LSTM":
             h_0, c_0 = self.lstm_init(inp_norm)
-            xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_lstm(
+            xi_projected, primal_residuals, fixed_point_residuals, qp_cost_residuals = self.compute_projection_lstm(
             lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0, c_0)
 
         
         # Compute average residuals
         avg_res_primal = torch.mean(primal_residuals, dim=0)
         avg_res_fixed_point = torch.mean(fixed_point_residuals, dim=0)
+        avg_res_qp_cost = torch.mean(qp_cost_residuals, dim=0)
         
-        return xi_projected, avg_res_fixed_point, avg_res_primal, primal_residuals, fixed_point_residuals
+        return xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost ,primal_residuals, fixed_point_residuals, qp_cost_residuals
 
-    def mlp_loss(self, avg_res_primal, avg_res_fixed_point):
+    def mlp_loss(self, avg_res_primal, avg_res_fixed_point, avg_res_qp_cost_loss):
 
 
         """Compute loss for optimization"""
         # Component losses
         primal_loss = 0.5 * torch.mean(avg_res_primal)
         fixed_point_loss = 0.5 * torch.mean(avg_res_fixed_point)
+        qp_cost_loss = 0.5 * torch.mean(avg_res_qp_cost_loss)
         # projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
         #projection_loss = 0.0 * torch.mean(avg_res_fixed_point)
         # Total loss
@@ -556,8 +565,22 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         inp_norm = (input_nn - inp_mean) / (inp_std + 1e-8)
 
         # Decode input to get control
-        xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm, desired_speed, desired_twisting_speed, rnn)
+        # xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost, res_primal_history, res_fixed_point_history, res_qp_cost_history = self.decoder_function(
+        #     inp_norm, desired_speed, desired_twisting_speed, rnn)
+        
+        (
+        xi_projected,
+        avg_res_fixed_point,
+        avg_res_primal,
+        avg_res_qp_cost,
+        res_primal_history,
+        res_fixed_point_history,
+        res_qp_cost_history) = self.decoder_function(
+        inp_norm,
+        desired_speed,
+        desired_twisting_speed,
+        rnn)
+        
         
             
-        return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
+        return xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost, res_primal_history, res_fixed_point_history, res_qp_cost_history
