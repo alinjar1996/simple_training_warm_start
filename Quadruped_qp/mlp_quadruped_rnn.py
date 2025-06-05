@@ -465,8 +465,8 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         # Linear cost term 
         # lincost = (-lamda + g - self.rho_ineq * torch.matmul(A_control.T, b_control_aug.T).T)
-        lamda = 0.0*lamda_init_nn_output
-        lincost = ( -lamda + g )
+        
+        lincost = ( -0.0*lamda_init_nn_output + g )
         
         Q_inv = torch.linalg.pinv(cost_matrix)
         
@@ -493,7 +493,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         lamda_init = lamda_init_nn_output
         
         # Initialize slack variables
-        s_init = 0.01*s_init_nn_output+0.99*s_ 
+        s_init = 0.00*s_init_nn_output+1.0*s_ 
 
 
 
@@ -654,7 +654,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         # projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
         #projection_loss = 0.0 * torch.mean(avg_res_fixed_point)
         # Total loss
-        loss = primal_loss + 1.0*fixed_point_loss + 0.4*qp_cost_loss
+        loss = primal_loss + 1.0*fixed_point_loss + 0.8*qp_cost_loss
 
         return primal_loss, fixed_point_loss, qp_cost_loss, loss
 

@@ -220,15 +220,20 @@ inp_norm_test = (inp_test - inp_mean) / inp_std
 inp_norm_test = inp_norm_test.to(device)
 
 
+
+desired_speed_batched = np.array([[0.0, 0.0]])               # shape (1, 2)
+desired_twisting_speed_batched = np.array([[0.0]])           # shape (1, 1)
+
+
 desired_speed_test = torch.from_numpy(desired_speed_batched).float().to(device)
 desired_twisting_speed_test = torch.from_numpy(desired_twisting_speed_batched).float().to(device)
 
 
+
 with torch.no_grad():
-    xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model.decoder_function(inp_norm_test, 
-                                                                                                                            desired_speed_test, 
-                                                                                                                            desired_twisting_speed_test, 
-                                                                                                                            rnn)
+    (xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost,
+     res_primal_history, res_fixed_point_history, res_qp_cost_history) = model.decoder_function(inp_norm_test, desired_speed_test,
+                                                                                                desired_twisting_speed_test, rnn)
 # Convert to numpy for analysis
 
 xi_filtered_np = np.array(xi_projected.cpu().detach().numpy())
