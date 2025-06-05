@@ -2,6 +2,8 @@
 *.pyc
 *.npz
 *.pth
+*.png
+
 
 
 
