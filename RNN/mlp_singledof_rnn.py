@@ -575,10 +575,20 @@ class MLPProjectionFilter(nn.Module):
 
     def forward(self, input_nn,  theta_init, v_start, v_goal, rnn):
         """Forward pass through the model"""
-        # Normalize input
-        inp_mean = input_nn.mean()
-        inp_std = input_nn.std()
-        inp_norm = (input_nn - inp_mean) / inp_std
+        # Normalize input with mean and standard deviation
+        # inp_mean = input_nn.mean()
+        # inp_std = input_nn.std()
+        # inp_norm = (input_nn - inp_mean) / inp_std
+
+        #Normalize input with mdian and quartile: Robust scaling
+        inp_median_ = torch.median(input_nn, dim=0).values
+        inp_q1 = torch.quantile(input_nn, 0.25, axis=0)
+        inp_q3 = torch.quantile(input_nn, 0.75, axis=0)
+        inp_iqr_ = inp_q3 - inp_q1
+        # Handle constant features
+        inp_iqr_ = torch.where(inp_iqr_ == 0, torch.tensor(1.0), inp_iqr_)
+        inp_norm = (input_nn - inp_median_) / inp_iqr_
+
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
