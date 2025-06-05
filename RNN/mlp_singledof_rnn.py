@@ -343,6 +343,8 @@ class MLPProjectionFilter(nn.Module):
         return b_eq
 
     def compute_feasible_control(self, xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal):
+
+
         """Compute feasible control following JAX approach exactly"""
         b_vel = torch.hstack((
             self.v_max * torch.ones((self.num_batch, self.num_vel_constraints // 2), device=device),

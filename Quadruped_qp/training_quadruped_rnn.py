@@ -117,7 +117,7 @@ FootPositionsInBodyFrame = torch.tensor([
 
 
 # Maximum Iterations
-maxiter_projection = 20
+maxiter_projection = 5
 
 nvar = 3*num_legs*horizon
 
@@ -131,15 +131,15 @@ num_total_constraints = 2*nvar
 #desired_twisting_speed_batched = np.full((num_batch, 1), desired_twisting_speed)
 
 
-
-desired_speed_batched, rng_desired_speed_batched = sample_uniform_variables(41, var_min= -0.2, var_max = 0.2, dataset_size=num_batch, nvar=2)
+dataset_size = 1*num_batch
+desired_speed_batched, rng_desired_speed_batched = sample_uniform_variables(None, var_min= -0.0, var_max = 0.0, dataset_size=dataset_size, nvar=2)
 desired_twisting_speed_batched,  rng_desired_twisting_speed_batched = sample_uniform_variables(
-                                                                      42, var_min= -0.2, var_max = 0.2, dataset_size=num_batch, 
+                                                                      42, var_min= -0.0, var_max = 0.0, dataset_size=dataset_size, 
                                                                       nvar=1)
 
-desired_speed_batched_val, rng_desired_speed_batched = sample_uniform_variables(40, var_min= -0.1, var_max = 0.1, dataset_size=num_batch, nvar=2)
+desired_speed_batched_val, rng_desired_speed_batched = sample_uniform_variables(None, var_min= -0.1, var_max = 0.1, dataset_size=dataset_size, nvar=2)
 desired_twisting_speed_batched_val,  rng_desired_twisting_speed_batched = sample_uniform_variables(
-                                                                      39, var_min= -0.1, var_max = 0.1, dataset_size=num_batch,
+                                                                      39, var_min= -0.1, var_max = 0.1, dataset_size=dataset_size,
                                                                       nvar=1)
 
 print("desired_speed_batched.shape", desired_speed_batched.shape)
@@ -240,35 +240,44 @@ print(f"Model type: {type(model)}")
 print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
 
 # Training
-epochs = 500
-optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=6e-5)
+epochs = 1500
+optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=6e-5)
 
 losses = []
 last_loss = torch.inf
-avg_train_loss, avg_primal_loss, avg_fixed_point_loss, avg_projection_loss = [], [], [], []
+avg_train_loss, avg_primal_loss, avg_fixed_point_loss, avg_qp_cost_loss = [], [], [], []
 avg_val_loss = []
 
 for epoch in range(epochs):
     
     # Train Loop
     model.train()
-    losses_train, primal_losses, fixed_point_losses, projection_losses = [], [], [], []
+    losses_train, primal_losses, fixed_point_losses, qp_cost_losses = [], [], [], []
     
     for (inp, desired_speed_batched, desired_twisting_speed_batched) in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
         
+        desired_speed_batched, rng_desired_speed_batched = sample_uniform_variables(None, var_min= -2, var_max = 2, dataset_size=dataset_size, nvar=2)
+        #desired_twisting_speed_batched, rng_desired_twisting_speed_batched = sample_uniform_variables(None, var_min= -0.5, var_max = 0.5, 
+                                                                                                     # dataset_size=dataset_size, nvar=1)
+        
+        
+        print("desired_speed_batched", desired_speed_batched)
+
+        desired_speed_batched = torch.tensor(desired_speed_batched).float()
+        #desired_twisting_speed_batched = torch.tensor(desired_twisting_speed_batched).float()
         # Input and Output 
         inp = inp.to(device)
         desired_speed_batched = desired_speed_batched.to(device)
         desired_twisting_speed_batched = desired_twisting_speed_batched.to(device)
         
         # Forward pass through quadruped model
-        xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model(inp, desired_speed_batched, 
+        xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost, res_primal_history, res_fixed_point_history, _ = model(inp, desired_speed_batched, 
                                                                                                                desired_twisting_speed_batched, rnn)
         
         
         # Compute loss
-        primal_loss, fixed_point_loss, loss = model.mlp_loss(
-            avg_res_primal, avg_res_fixed_point)
+        primal_loss, fixed_point_loss, qp_cost_loss ,loss = model.mlp_loss(
+            avg_res_primal, avg_res_fixed_point, avg_res_qp_cost)
 
         optimizer.zero_grad()
         loss.backward()
@@ -281,6 +290,7 @@ for epoch in range(epochs):
         losses_train.append(loss.detach().cpu().numpy()) 
         primal_losses.append(primal_loss.detach().cpu().numpy())
         fixed_point_losses.append(fixed_point_loss.detach().cpu().numpy())
+        qp_cost_losses.append(qp_cost_loss.detach().cpu().numpy())
         #projection_losses.append(projection_loss.detach().cpu().numpy())
         
     # Validation every 2 epochs
@@ -294,21 +304,25 @@ for epoch in range(epochs):
                 desired_speed_batched_val = desired_speed_batched_val.to(device)
                 desired_twisting_speed_batched_val = desired_twisting_speed_batched_val.to(device)
 
-                xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = model(inp_val, desired_speed_batched_val, 
+                xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost, res_primal_history, res_fixed_point_history, _ = model(inp_val, desired_speed_batched_val, 
                                                                                                                        desired_twisting_speed_batched_val,
                                                                                                                        rnn)
                 
-                _, _, val_loss = model.mlp_loss(
-                    avg_res_primal, avg_res_fixed_point
+                _, _, _, val_loss = model.mlp_loss(
+                    avg_res_primal, avg_res_fixed_point, avg_res_qp_cost
                 )
 
                 val_losses.append(val_loss.detach().cpu().numpy())
 
     # Print progress every 2 epochs
     if epoch % 2 == 0:    
-        print(f"Epoch: {epoch + 1}, Train Loss: {np.average(losses_train):.4f}, "
-              f"Primal Loss: {np.average(primal_losses):.4f}, "
-              f"Fixed-Point Loss: {np.average(fixed_point_losses):.4f}, ")
+        print(
+            f"Epoch: {epoch + 1}, Train Loss: {np.average(losses_train):.4f}, "
+            f"Primal Loss: {np.average(primal_losses):.4f}, "
+            f"Fixed-Point Loss: {np.average(fixed_point_losses):.4f}, "
+            f"QP Cost Loss: {np.average(qp_cost_losses):.4f}"
+        )
+
               #f"Projection Loss: {np.average(projection_losses):.4f}")
         
         if len(val_losses) > 0:
@@ -323,7 +337,7 @@ for epoch in range(epochs):
     # Store metrics
     avg_train_loss.append(np.average(losses_train))
     avg_primal_loss.append(np.average(primal_losses))
-    avg_projection_loss.append(np.average(projection_losses))
+    avg_qp_cost_loss.append(np.average(qp_cost_losses))
     avg_fixed_point_loss.append(np.average(fixed_point_losses))
     
     if len(val_losses) > 0:

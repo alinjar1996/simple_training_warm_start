@@ -207,6 +207,9 @@ class QuadrupedQPProjector:
         sol = jnp.linalg.solve(cost_mat, (-lincost).T).T
         # Extract primal solution
         xi_projected = sol[:, 0:self.nvar]
+
+        # jax.debug.print("xi_projected max: {}", jnp.max(xi_projected))
+        # jax.debug.print("xi_projected min: {}", jnp.min(xi_projected))
         
         # Update slack variables (following )
         s = jnp.maximum(
@@ -220,16 +223,26 @@ class QuadrupedQPProjector:
         res_vec = jnp.dot(self.A_control, xi_projected.T).T - b_control + s
 
 
-        print("xi_projected", xi_projected.shape)   
-        print("res_vec" , res_vec.shape)
+        # print("xi_projected", xi_projected.shape)   
+        # print("res_vec" , res_vec.shape)
         res_norm = jnp.linalg.norm(res_vec, axis=1)
-        print("res_norm", res_norm.shape)
+        # print("res_norm", res_norm.shape)
+
+
         
         # Update Lagrange multipliers (following )
         lamda = lamda - self.rho * jnp.dot(self.A_control.T, res_vec.T).T
 
-        # qp_cost = xi_projected.T @ self.H @ (xi_projected)+ xi_projected.T@self.g
-        # qp_cost_norm = jnp.linalg.norm(qp_cost, dim=1)
+        #print("self.H", self.H)
+
+        qp_cost = xi_projected @ self.H @ (xi_projected.T)+ xi_projected@self.g
+        # print("qp_cost", qp_cost.shape)
+        
+        # jax.debug.print("qp_cost max: {}", jnp.max(qp_cost))
+        # jax.debug.print("qp_cost min: {}", jnp.min(qp_cost))
+
+        qp_cost_norm = jnp.linalg.norm(qp_cost, axis=1)
+        
         # print("lamda", lamda.shape)
         return xi_projected, s, res_norm, lamda
 
@@ -311,6 +324,7 @@ class QuadrupedQPProjector:
         """Print information about the QP problem dimensions"""
         print("=== Quadruped QP Problem Information ===")
         print(f"H matrix shape: {self.H.shape}")
+        print(f"H condition number: {jnp.linalg.cond(self.H)}")
         print(f"g vector shape: {self.g.shape}")
         print(f"C matrix shape: {self.C.shape}")
         print(f"constraint limit vector shape: {self.c.shape}")
@@ -324,10 +338,10 @@ class QuadrupedQPProjector:
 def main():
     """Main function demonstrating the batched quadruped QP projector"""
     
-    num_batch=1  # Increased batch size to demonstrate batching
+    num_batch=10  # Increased batch size to demonstrate batching
     maxiter=20
     rho=1
-    desired_speed=(-0.2, 0.1)
+    desired_speed=(-0.1, 0.1)
     desired_twisting_speed=0.0
     desired_body_height=0.5
     body_mass=30.0

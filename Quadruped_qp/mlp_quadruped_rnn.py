@@ -345,10 +345,13 @@ class MLPQuadrupedProjectionFilter(nn.Module):
 
         A_control = C
 
+        reg_param = 1e-4
+
         # Cost matrix 
 
-        cost = (H + self.rho_ineq * torch.matmul(A_control.T, A_control)).to(device)
-
+        cost = (H + self.rho_ineq * torch.matmul(A_control.T, A_control) + reg_param * torch.eye(self.nvar, device=device)).to(device)
+        
+        # print(f"Regularized condition number: {torch.linalg.cond(cost)}")
 
         cost_matrix = cost
         
@@ -363,7 +366,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         lincost = (-lamda + g - 
                   self.rho_ineq * torch.matmul(A_control.T, b_control_aug.T).T)
         
-        Q_inv = torch.linalg.inv(cost_matrix)
+        Q_inv = torch.linalg.pinv(cost_matrix)
         
         # Solve KKT system
         #rhs = torch.hstack((-lincost, b_eq))
@@ -389,20 +392,111 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         # Update Lagrange multipliers (following JAX)
         lamda = lamda - self.rho_ineq * torch.matmul(A_control.T, res_vec.T).T
 
-        qp_cost = xi_projected.T.matmul(H).matmul(xi_projected)+xi_projected.T.matmul(g)
+        qp_cost = 0.5 * xi_projected @ H @ xi_projected.T + xi_projected @ g
+
         qp_cost_norm = torch.linalg.norm(qp_cost, dim=1)
+
+        # # Debug prints
+        # print(f"H matrix condition number: {torch.linalg.cond(H)}")
+        # print(f"xi_projected range: [{xi_projected.min():.4f}, {xi_projected.max():.4f}]")
+        # print(f"H diagonal range: [{H.diag().min():.4f}, {H.diag().max():.4f}]")
+        # print(f"g range: [{g.min():.4f}, {g.max():.4f}]")
         
-        return xi_projected, s, res_norm, lamda, H, g, qp_cost_norm
+        return xi_projected, s, res_norm, lamda, qp_cost_norm, H, g
 
     def compute_projection_gru(self, lamda_init_nn_output, s_init_nn_output, desired_speed, desired_twisting_speed, h_0):
         """Project sampled trajectories following JAX approach"""
+        desired_speed_tuple = tuple(desired_speed[0].tolist())  # → (0.5, -0.2)
+        # desired_twisting_speed_tuple = tuple(desired_twisting_speed[0].tolist())  # → (0.0, 0.0)
+        # print("desired_speed_tuple", desired_speed_tuple)
+        # print("desired_twisting_speed_tuple", desired_twisting_speed_tuple)
+
+        desired_twisting_speed_scalar = desired_twisting_speed[0].item()
+
+        # print("desired_twisting_speed_scalar", desired_twisting_speed_scalar)
+        
+        controller = ForceStanceLegController(
+            desired_speed=desired_speed_tuple,
+            desired_twisting_speed=desired_twisting_speed_scalar,
+            desired_body_height=self.desired_body_height,
+            body_mass=self.body_mass,
+            body_inertia=self.body_inertia,
+            num_legs=self.num_legs,
+            friction_coeff=self.friction_coeff,
+            timestep=self.timestep,
+            horizon=self.horizon
+        )
+
+        # Get QP matrices
+        H, g, C, c, _ = controller.getMatrices(
+            BaseRollPitchYaw=self.BaseRollPitchYaw,
+            AngularVelocityBodyFrame=self.AngularVelocityBodyFrame,
+            ComVelocityBodyFrame=self.ComVelocityBodyFrame,
+            FootPositionsInBodyFrame=self.FootPositionsInBodyFrame,
+            FootContacts=self.FootContacts,
+            slope_estimate=self.slope_estimate,
+            RotationBodyWrtWorld=self.RotationBodyWrtWorld,
+            Training = True
+        )
+        H = torch.tensor(H, dtype=torch.float32, device=device)
+        g = torch.tensor(g, dtype=torch.float32, device=device)
+        c = torch.tensor(c, dtype=torch.float32, device=device)
+        C = torch.tensor(C, dtype=torch.float32, device=device)
+
+        A_control = C
+
+        reg_param = 1e-4
+
+        # Cost matrix 
+
+        #cost = (H + self.rho_ineq * torch.matmul(A_control.T, A_control) + reg_param * torch.eye(self.nvar, device=device)).to(device)
+        
+        cost = H
+        # print(f"Regularized condition number: {torch.linalg.cond(cost)}")
+
+        cost_matrix = cost + 1e-4*torch.eye(self.nvar, device=device)
+        
+        # #b_eq = self.b_eq
+
+        # b_control = c
+        
+        # # Augmented bounds with slack variables
+        # b_control_aug = b_control - s
+
+        # Linear cost term 
+        # lincost = (-lamda + g - self.rho_ineq * torch.matmul(A_control.T, b_control_aug.T).T)
+        lamda = 0.0*lamda_init_nn_output
+        lincost = ( -lamda + g )
+        
+        Q_inv = torch.linalg.pinv(cost_matrix)
+        
+        # Solve KKT system
+        #rhs = torch.hstack((-lincost, b_eq))
+        rhs = -lincost
+        sol = torch.matmul(Q_inv, rhs.T).T
+        # # Solve KKT system
+        # rhs = 
+        # sol = torch.linalg.solve(cost_mat, (-lincost, b_eq).T).T
+        
+        # Extract primal solution
+        xi_projected_ = sol[:, 0:self.nvar]
+        
+        # Update slack variables (following JAX)
+        s_ = torch.maximum(
+            torch.zeros((self.num_batch, self.num_constraints), device=device),
+            -torch.matmul(A_control, xi_projected_.T).T + c
+        )
+        
         
         # Initialize variables
         
         lamda_init = lamda_init_nn_output
         
         # Initialize slack variables
-        s_init = s_init_nn_output 
+        s_init = 0.01*s_init_nn_output+0.99*s_ 
+
+
+
         
         # Initialize tracking variables
         lamda = lamda_init
@@ -411,6 +505,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         
         primal_residuals = []
         fixed_point_residuals = []
+        qp_cost_residuals = []
         
         # Projection iterations
         for idx in range(self.maxiter_projection):
@@ -419,7 +514,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             s_prev = s.clone()
             
             # Perform projection step
-            xi_projected, s, res_norm, lamda, qp_cost_norm = self.compute_feasible_control(
+            xi_projected, s, res_norm, lamda, qp_cost_norm, H, g = self.compute_feasible_control(
                 s, lamda, desired_speed, desired_twisting_speed)
             
             # Perform GRU acceleration after fixed-point iteration
@@ -436,6 +531,8 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             s = s + s_delta
             s = torch.maximum(torch.zeros((self.num_batch, self.num_constraints), device=device), s)
 
+            
+
             # Compute residuals
             primal_residual = res_norm
             fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
@@ -450,7 +547,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         # Stack residuals
         primal_residuals = torch.stack(primal_residuals)
         fixed_point_residuals = torch.stack(fixed_point_residuals)
-        qp_cost_residuals = torch.stack(qp_cost_residuals)
+        qp_cost_residuals = torch.stack(qp_cost_residuals) #+ (s_ - s_init)**2
         
         return xi_projected, primal_residuals, fixed_point_residuals, qp_cost_residuals
     
@@ -481,7 +578,7 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             s_prev = s.clone()
             
             # Perform projection step
-            xi_projected, s, res_norm, lamda = self.compute_feasible_control(
+            xi_projected, s, res_norm, lamda, qp_cost_norm = self.compute_feasible_control(
                 s, lamda, desired_speed, desired_twisting_speed)
             
             # Perform GRU acceleration after fixed-point iteration
@@ -503,14 +600,18 @@ class MLPQuadrupedProjectionFilter(nn.Module):
             fixed_point_residual = (torch.linalg.norm(lamda_prev - lamda, dim=1) + 
                                   torch.linalg.norm(s_prev - s, dim=1))
             
+            qp_cost_residual = qp_cost_norm
+            
             primal_residuals.append(primal_residual)
             fixed_point_residuals.append(fixed_point_residual)
+            qp_cost_residuals.append(qp_cost_residual)
 
         # Stack residuals
         primal_residuals = torch.stack(primal_residuals)
         fixed_point_residuals = torch.stack(fixed_point_residuals)
+        qp_cost_residuals = torch.stack(qp_cost_residuals)
         
-        return xi_projected, primal_residuals, fixed_point_residuals
+        return xi_projected, primal_residuals, fixed_point_residuals, qp_cost_residuals
 
     def decoder_function(self, inp_norm, desired_speed, desired_twisting_speed, rnn):
         """Decoder function to compute initials from normalized input"""
@@ -553,23 +654,30 @@ class MLPQuadrupedProjectionFilter(nn.Module):
         # projection_loss = 0.5 * self.rcl_loss(xi_projected_output_nn, inp_norm)
         #projection_loss = 0.0 * torch.mean(avg_res_fixed_point)
         # Total loss
-        loss = primal_loss + fixed_point_loss #+ 0.1 * projection_loss
+        loss = primal_loss + 1.0*fixed_point_loss + 0.4*qp_cost_loss
 
-        return primal_loss, fixed_point_loss, loss
+        return primal_loss, fixed_point_loss, qp_cost_loss, loss
 
     def forward(self, input_nn, desired_speed, desired_twisting_speed, rnn):
         """Forward pass through the model"""
-        # Normalize input
-        inp_mean = input_nn.mean()
-        inp_std = input_nn.std()
-        inp_norm = (input_nn - inp_mean) / (inp_std + 1e-8)
+        # # Normalize input
+        # inp_mean = input_nn.mean()
+        # inp_std = input_nn.std()
+        # inp_norm = (input_nn - inp_mean) / (inp_std + 1e-8)
+
+        inp_median_ = torch.median(input_nn, dim=0).values
+        inp_q1 = torch.quantile(input_nn, 0.25, axis=0)
+        inp_q3 = torch.quantile(input_nn, 0.75, axis=0)
+        inp_iqr_ = inp_q3 - inp_q1
+        # Handle constant features
+        inp_iqr_ = torch.where(inp_iqr_ == 0, torch.tensor(1.0), inp_iqr_)
+        inp_norm = (input_nn - inp_median_) / inp_iqr_
 
         # Decode input to get control
         # xi_projected, avg_res_fixed_point, avg_res_primal, avg_res_qp_cost, res_primal_history, res_fixed_point_history, res_qp_cost_history = self.decoder_function(
         #     inp_norm, desired_speed, desired_twisting_speed, rnn)
         
-        (
-        xi_projected,
+        (xi_projected,
         avg_res_fixed_point,
         avg_res_primal,
         avg_res_qp_cost,
