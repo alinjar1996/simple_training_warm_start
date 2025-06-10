@@ -331,18 +331,15 @@ class MLPProjectionFilter(nn.Module):
         
         return torch.inverse(Q)
 
-    def compute_boundary_vec(self, v_start, v_goal):
+    def compute_boundary_vec(self, v_start):
         """Compute boundary condition vector"""
         # Stack start and goal velocities for all DOFs
         # v_start_batch = self.v_start.to(device) #self.v_start.unsqueeze(0).repeat(self.num_batch, 1)
-        # v_goal_batch = self.v_goal.to(device) #self.v_goal.unsqueeze(0).repeat(self.num_batch, 1)
         v_start_batch = v_start
-        v_goal_batch = v_goal
-        # b_eq = torch.hstack([v_start_batch, v_goal_batch])
         b_eq = v_start_batch
         return b_eq
 
-    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal):
+    def compute_feasible_control(self, xi_samples, s, xi_projected, lamda, theta_init, v_start):
         """Compute feasible control following JAX approach exactly"""
         b_vel = torch.hstack((
             self.v_max * torch.ones((self.num_batch, self.num_vel_constraints // 2), device=device),
@@ -370,7 +367,7 @@ class MLPProjectionFilter(nn.Module):
         b_control_aug = b_control - s
         
         # Boundary conditions
-        b_eq = self.compute_boundary_vec(v_start=v_start,v_goal=v_goal)
+        b_eq = self.compute_boundary_vec(v_start=v_start)
 
         # print("b_control_aug", b_control_aug.shape)
         # print("self.A_control", self.A_control.shape)
@@ -402,7 +399,7 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, s, res_norm, lamda
 
-    def compute_projection_gru(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0):
+    def compute_projection_gru(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, h_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
@@ -430,7 +427,7 @@ class MLPProjectionFilter(nn.Module):
             
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
-                xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal)
+                xi_samples, s, xi_projected, lamda, theta_init, v_start)
             
             #Perform GRU accelaration after fixed-point iteration, i.e., projection step
             r_1 = torch.hstack((s_prev, lamda_prev))
@@ -461,7 +458,7 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, primal_residuals, fixed_point_residuals
     
-    def compute_projection_lstm(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0):
+    def compute_projection_lstm(self, xi_samples, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, h_0, c_0):
         """Project sampled trajectories following JAX approach"""
         
         # Initialize variables
@@ -491,7 +488,7 @@ class MLPProjectionFilter(nn.Module):
             
             # Perform projection step
             xi_projected, s, res_norm, lamda = self.compute_feasible_control(
-                xi_samples, s, xi_projected, lamda, theta_init, v_start, v_goal)
+                xi_samples, s, xi_projected, lamda, theta_init, v_start)
             
             #Perform GRU accelaration after fixed-point iteration, i.e., projection step
             r_1 = torch.hstack((s_prev, lamda_prev))
@@ -522,7 +519,7 @@ class MLPProjectionFilter(nn.Module):
         
         return xi_projected, primal_residuals, fixed_point_residuals
     
-    def decoder_function(self, inp_norm, input_nn, theta_init, v_start, v_goal, rnn):
+    def decoder_function(self, inp_norm, input_nn, theta_init, v_start, rnn):
         """Decoder function to compute initials from normalized input"""
         # Get neural network output
         neural_output_batch = self.mlp(inp_norm)
@@ -540,12 +537,12 @@ class MLPProjectionFilter(nn.Module):
         if rnn == "GRU":
             h_0 = self.gru_init(inp_norm)
             xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_gru(
-            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0)
+            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, h_0)
         
         elif rnn == "LSTM":
             h_0, c_0 = self.lstm_init(inp_norm)
             xi_projected, primal_residuals, fixed_point_residuals = self.compute_projection_lstm(
-            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, v_goal, h_0, c_0)
+            xi_samples_input_nn, xi_projected_output_nn, lamda_init_nn_output, s_init_nn_output, theta_init, v_start, h_0, c_0)
 
 
         # Run projection
@@ -573,7 +570,7 @@ class MLPProjectionFilter(nn.Module):
 
         return primal_loss, fixed_point_loss, projection_loss, loss
 
-    def forward(self, input_nn,  theta_init, v_start, v_goal, rnn):
+    def forward(self, input_nn,  theta_init, v_start, rnn):
         """Forward pass through the model"""
         # Normalize input with mean and standard deviation
         # inp_mean = input_nn.mean()
@@ -592,6 +589,6 @@ class MLPProjectionFilter(nn.Module):
 
         # Decode input to get control
         xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history = self.decoder_function(
-            inp_norm, input_nn, theta_init, v_start, v_goal, rnn)
+            inp_norm, input_nn, theta_init, v_start, rnn)
             
         return xi_projected, avg_res_fixed_point, avg_res_primal, res_primal_history, res_fixed_point_history
