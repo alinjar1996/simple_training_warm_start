@@ -566,7 +566,7 @@ class MLPProjectionFilter(nn.Module):
         projection_loss = 0.5* self.rcl_loss(xi_projected_output_nn, xi_samples_input_nn)
 
         # Total loss
-        loss = primal_loss + fixed_point_loss + 1.0*projection_loss
+        loss = primal_loss + fixed_point_loss + 3.0*projection_loss
 
         return primal_loss, fixed_point_loss, projection_loss, loss
 

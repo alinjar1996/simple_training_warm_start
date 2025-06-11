@@ -39,9 +39,9 @@ num_batch = 1000
 num_dof=1
 num_steps=50
 timestep=0.05
-v_max=1.0
-a_max=2.0
-j_max=5.0
+v_max=2.0
+a_max=5.0
+j_max=10.0
 p_max=180.0*np.pi/180.0 
 
 
